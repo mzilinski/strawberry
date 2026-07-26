@@ -19,6 +19,25 @@ Qt Creator build configs already exist under `build/Qt_Sys-{Release,RelWithDebIn
 
 Useful CMake options: `-DBUILD_WERROR=ON`, `-DENABLE_DEBUG_OUTPUT=ON`.
 
+### macOS app-bundle deploy (dev machine with Homebrew)
+
+`make deploy` (in the build dir) runs `dist/macos/macgstcopy.sh` + macdeployqt. Required environment:
+
+```bash
+GIO_EXTRA_MODULES=/opt/homebrew/lib/gio/modules \
+GST_PLUGIN_SCANNER=/opt/homebrew/opt/gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner \
+GST_PLUGIN_PATH=/opt/homebrew/lib/gstreamer-1.0 \
+LIBSOUP_LIBRARY_PATH=/opt/homebrew/opt/libsoup/lib/libsoup-3.0.0.dylib \
+make deploy
+```
+
+Known pitfalls on a machine where Homebrew is installed (symptoms: HTTP streams don't play; log shows `'GstMiniObject' has no property 'user-agent'` or "Missing GStreamer plugin for HTTP protocol source"):
+
+1. `macgstcopy.sh` hard-fails on plugins missing from Homebrew's GStreamer (`bs2b`, `cdio`, `openmpt`, `wavpack`); temporarily remove them from the list, restore the script after deploying.
+2. `PlugIns/gstreamer/libgstsoup.dylib` keeps an `/opt/homebrew/opt/libsoup/lib` LC_RPATH; its runtime `dlopen("libsoup-3.0.0.dylib")` then loads Homebrew's libsoup, pulling a second glib stack into the process (GType chaos). Fix: `install_name_tool -rpath /opt/homebrew/opt/libsoup/lib @loader_path/../../Frameworks libgstsoup.dylib`.
+3. Every dylib touched by `install_name_tool` (including `Frameworks/libsoup-3.0.0.dylib`) must be re-signed: `codesign --force --sign - <dylib>`. An invalid signature makes dlopen fail silently (SIGKILL on arm64).
+4. Delete the stale GStreamer registry cache after fixing: `~/Library/Application Support/Strawberry/Strawberry/gst-registry-<version>-bin`.
+
 ### Tests
 
 Tests are built only when GTest, GMock, and Qt6 Test are found (`tests/` is added conditionally). They are `EXCLUDE_FROM_ALL`, so build them explicitly:
