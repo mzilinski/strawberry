@@ -40,6 +40,7 @@ jobs:
             cmake
             gcc
             gcc-c++
+            ccache
             openssl
             openssh-clients
             glibc-devel
@@ -52,6 +53,7 @@ jobs:
             libnotify-devel
             sqlite3-devel
             libpulse-devel
+            libsecret-devel
             gstreamer-devel
             gstreamer-plugins-base-devel
             gstreamer-plugins-base
@@ -91,6 +93,23 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.opensuse_version}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.opensuse_version}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=$(rpm --eval '%{_builddir}')" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Create Build Environment
         run: cmake -E make_directory build
       - name: Configure CMake
@@ -129,6 +148,9 @@ jobs:
           RPM_BUILD_NCPUS: 4
         working-directory: build
         run: rpmbuild -ba strawberry.spec
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Set subdir
         id: set-subdir
         run: echo "subdir=$(echo ${{matrix.opensuse_version}} | sed 's/leap:/lp/g' | sed 's/\.//g')" > $GITHUB_OUTPUT
@@ -178,6 +200,7 @@ jobs:
             rpmdevtools
             make
             cmake
+            ccache
             pkgconfig
             glib
             man
@@ -190,6 +213,7 @@ jobs:
             sqlite-devel
             alsa-lib-devel
             pulseaudio-libs-devel
+            libsecret-devel
             libnotify-devel
             libicu-devel
             qt6-qtbase-devel
@@ -220,6 +244,24 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.fedora_version}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.fedora_version}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=$(rpm --eval '%{_builddir}')" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "%_lto_cflags %{nil}" >> "${HOME}/.rpmmacros"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Create Build Environment
         run: cmake -E make_directory build
       - name: Configure CMake
@@ -259,6 +301,9 @@ jobs:
           RPM_BUILD_NCPUS: 4
         working-directory: build
         run: rpmbuild -ba strawberry.spec
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -270,10 +315,9 @@ jobs:
 
   build-openmandriva:
     name: Build OpenMandriva
-    if: false
-    #if: (github.event_name == 'push' && github.repository == 'strawberrymusicplayer/strawberry' && github.ref_name != 'l10n_master') ||
-    #    (github.event_name == 'pull_request' && github.head_ref != 'l10n_master') ||
-    #    (github.event_name == 'release')
+    if: (github.event_name == 'push' && github.repository == 'strawberrymusicplayer/strawberry' && github.ref_name != 'l10n_master' && github.ref_name != 'macos' && github.ref_name != 'nsi') ||
+        (github.event_name == 'pull_request' && github.head_ref != 'l10n_master' && github.head_ref != 'macos' && github.head_ref != 'nsi') ||
+        (github.event_name == 'release')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -297,12 +341,14 @@ jobs:
           rpmdevtools
           rpm-build
           openssl
+          ccache
           glibc-devel
           boost-devel
           lib64glib2.0-devel
           lib64openssl-devel
           lib64asound-devel
           lib64pulseaudio-devel
+          lib64secret-devel
           lib64sqlite3-devel
           lib64gstreamer-devel
           lib64gst-plugins-base1.0-devel
@@ -346,6 +392,21 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.openmandriva_version}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.openmandriva_version}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=$(rpm --eval '%{_builddir}')" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Create Build Environment
         run: cmake -E make_directory build
       - name: Configure CMake
@@ -386,6 +447,9 @@ jobs:
           CXXFLAGS: "-Wno-error=c2y-extensions"
         working-directory: build
         run: rpmbuild -ba strawberry.spec
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Upload artifacts
         if: matrix.openmandriva_version != 'cooker'
         uses: actions/upload-artifact@v7
@@ -426,11 +490,13 @@ jobs:
           tar
           rpmdevtools
           openssl
+          ccache
           lib64openssl-devel
           lib64boost-devel
           lib64sqlite3-devel
           lib64alsa2-devel
           lib64pulseaudio-devel
+          lib64secret-devel
           lib64gstreamer1.0-devel
           lib64gstreamer-plugins-base1.0-devel
           lib64cdio-devel
@@ -475,6 +541,23 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.mageia_version}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.mageia_version}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=$(rpm --eval '%{_builddir}')" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Create Build Environment
         run: cmake -E make_directory build
       - name: Configure CMake
@@ -514,6 +597,9 @@ jobs:
           RPM_BUILD_NCPUS: 4
         working-directory: build
         run: rpmbuild -ba strawberry.spec
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -556,6 +642,7 @@ jobs:
             fakeroot
             lsb-release
             openssl
+            ccache
             dpkg-dev
             libglib2.0-dev
             libssl-dev
@@ -563,6 +650,7 @@ jobs:
             libsqlite3-dev
             libasound2-dev
             libpulse-dev
+            libsecret-1-dev
             libicu-dev
             libgstreamer1.0-dev
             libgstreamer-plugins-base1.0-dev
@@ -604,6 +692,23 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.debian_version}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.debian_version}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Create Build Environment
         run: cmake -E make_directory build
       - name: Configure CMake
@@ -634,6 +739,9 @@ jobs:
         run: rm -rf build
       - name: make deb
         run: dpkg-buildpackage -b -d -uc -us -nc -j4
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Copy deb
         run: cp ../*.deb .
       - name: Upload artifacts
@@ -680,12 +788,14 @@ jobs:
             lsb-release
             dpkg-dev
             openssl
+            ccache
             libglib2.0-dev
             libssl-dev
             libboost-dev
             libsqlite3-dev
             libasound2-dev
             libpulse-dev
+            libsecret-1-dev
             libicu-dev
             libgstreamer1.0-dev
             libgstreamer-plugins-base1.0-dev
@@ -727,6 +837,26 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.ubuntu_version}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.ubuntu_version}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "DEB_CFLAGS_APPEND=-fno-lto" >> "${GITHUB_ENV}"
+          echo "DEB_CXXFLAGS_APPEND=-fno-lto" >> "${GITHUB_ENV}"
+          echo "DEB_LDFLAGS_APPEND=-fno-lto" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Create Build Environment
         run: cmake -E make_directory build
       - name: Configure CMake
@@ -757,6 +887,9 @@ jobs:
         run: rm -rf build
       - name: make deb
         run: dpkg-buildpackage -b -d -uc -us -nc -j4
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Copy deb
         run: cp ../*.deb ../*.ddeb .
       - name: Upload artifacts
@@ -810,6 +943,7 @@ jobs:
             libsqlite3-dev
             libasound2-dev
             libpulse-dev
+            libsecret-1-dev
             libicu-dev
             libgstreamer1.0-dev
             libgstreamer-plugins-base1.0-dev
@@ -925,6 +1059,7 @@ jobs:
             cmake
             gcc
             gcc-c++
+            ccache
             openssl
             openssh-clients
             glibc-devel
@@ -937,6 +1072,7 @@ jobs:
             libnotify-devel
             sqlite3-devel
             libpulse-devel
+            libsecret-devel
             gstreamer-devel
             gstreamer-plugins-base-devel
             gstreamer-plugins-base
@@ -984,6 +1120,23 @@ jobs:
           submodules: recursive
       - name: Add safe git directory
         run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=500M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" ccache --zero-stats
       - name: Configure
         run: >
           cmake -S . -B build
@@ -1011,6 +1164,9 @@ jobs:
       - name: Build
         working-directory: build
         run: make -j$(nproc)
+      - name: Show ccache statistics
+        if: github.event_name != 'release'
+        run: ccache --show-stats
       - name: Install
         working-directory: build
         run: make install DESTDIR="${GITHUB_WORKSPACE}/AppDir"
@@ -1085,7 +1241,7 @@ jobs:
       with:
         usesh: true
         mem: 8192
-        prepare: pkg install -y git cmake pkgconf openssl boost-libs alsa-lib glib qt6-base qt6-tools sqlite gstreamer1 gstreamer1-plugins chromaprint libebur128 taglib libcdio libmtp gdk-pixbuf2 fftw3 icu kdsingleapplication googletest pulseaudio sparsehash
+        prepare: pkg install -y git cmake pkgconf openssl boost-libs alsa-lib glib qt6-base qt6-tools sqlite gstreamer1 gstreamer1-plugins chromaprint libebur128 taglib libcdio libmtp gdk-pixbuf2 fftw3 icu kdsingleapplication googletest pulseaudio sparsehash libsecret
         run: |
           set -e
           git config --global --add safe.directory ${GITHUB_WORKSPACE}
@@ -1111,7 +1267,7 @@ jobs:
       with:
         usesh: true
         mem: 4096
-        prepare: pkg_add git cmake pkgconf boost glib2 qt6-qtbase qt6-qttools sqlite gstreamer1 gstreamer1-plugins-base chromaprint libebur128 taglib libcdio libmtp gdk-pixbuf libgpod fftw3 icu4c kdsingleapplication pulseaudio sparsehash
+        prepare: pkg_add git cmake pkgconf boost glib2 qt6-qtbase qt6-qttools sqlite gstreamer1 gstreamer1-plugins-base chromaprint libebur128 taglib libcdio libmtp gdk-pixbuf libgpod fftw3 icu4c kdsingleapplication pulseaudio sparsehash libsecret
         run: |
           set -e
           export LDFLAGS="-L/usr/local/lib"
@@ -1457,6 +1613,30 @@ jobs:
       - name: Add MXE directory to PATH
         run: echo "/strawberry-mxe/usr/bin" >> $GITHUB_PATH
 
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ccache-${{github.job}}-${{matrix.arch}}-${{matrix.buildtype}}-${{github.run_id}}
+          restore-keys: ccache-${{github.job}}-${{matrix.arch}}-${{matrix.buildtype}}-
+
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        run: |
+          ccache=/strawberry-mxe/.ccache/bin/ccache
+          if [ ! -x "${ccache}" ]; then
+            echo "::warning::${ccache} not found, building without ccache."
+            exit 0
+          fi
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
+          echo "CCACHE_MAXSIZE=750M" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER_LAUNCHER=${ccache}" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=${ccache}" >> "${GITHUB_ENV}"
+          CCACHE_DIR="${HOME}/.ccache" "${ccache}" --zero-stats
+
       - name: Run CMake
         env:
           PKG_CONFIG_PATH: /strawberry-mxe/usr/${{matrix.arch}}-w64-mingw32.shared/lib/pkgconfig
@@ -1500,6 +1680,10 @@ jobs:
 
       - name: Run Make
         run: cmake --build build --config "${{env.cmake_buildtype}}" --parallel $(nproc)
+
+      - name: Show ccache statistics
+        if: github.event_name != 'release' && env.CMAKE_CXX_COMPILER_LAUNCHER != ''
+        run: ${CMAKE_CXX_COMPILER_LAUNCHER} --show-stats
 
       - name: Create directories
         working-directory: build
@@ -1744,35 +1928,12 @@ jobs:
         working-directory: downloads
         run: 7z x LockedList.zip
 
-      - name: Download NSIS Registry plugin
-        shell: cmd
-        working-directory: downloads
-        run: curl -f -O -L https://nsis.sourceforge.io/mediawiki/images/4/47/Registry.zip
-
-      - name: Extract NSIS Registry plugin
-        shell: cmd
-        working-directory: downloads
-        run: 7z x Registry.zip
-
-      - name: Download NSIS Inetc plugin
-        shell: cmd
-        working-directory: downloads
-        run: curl -f -O -L https://nsis.sourceforge.io/mediawiki/images/c/c9/Inetc.zip
-
-      - name: Extract NSIS Inetc plugin
-        shell: cmd
-        working-directory: downloads
-        run: 7z x Inetc.zip
-
       - name: Install NSIS plugins
         shell: cmd
         working-directory: downloads
         run: |
           copy "Plugins\LockedList64.dll" "C:\Program Files (x86)\NSIS\Plugins\"
           copy "Plugins\x86-unicode\LockedList.dll" "C:\Program Files (x86)\NSIS\Plugins\x86-unicode\"
-          copy "Desktop\Plugin\registry.dll" "C:\Program Files (x86)\NSIS\Plugins\"
-          copy "Desktop\Plugin\registry.dll" "C:\Program Files (x86)\NSIS\Plugins\x86-unicode\"
-          copy "Plugins\x86-unicode\INetC.dll" "C:\Program Files (x86)\NSIS\Plugins\x86-unicode\"
 
       - name: Setup MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
