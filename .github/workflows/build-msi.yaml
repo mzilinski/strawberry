@@ -1,0 +1,207 @@
+name: Build MSI
+
+# Lean Windows build that only produces the MSVC x86_64 release MSI.
+# Compared to build-windows-msvc in build.yaml it skips the debug and arm64 builds, NSIS and the uploads, caches the compiler output with ccache and harvests files with WiX instead of maintaining a file list.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'ext/**'
+      - '3rdparty/**'
+      - 'cmake/**'
+      - 'data/**'
+      - 'CMakeLists.txt'
+      - 'dist/windows/**'
+      - '.github/workflows/build-msi.yaml'
+
+concurrency:
+  group: ${{github.workflow}}-${{github.ref}}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  arch: x86_64
+  msi_arch: x64
+  prefix_path_backslash: c:\strawberry_msvc_x86_64_release
+  prefix_path_forwardslash: c:/strawberry_msvc_x86_64_release
+  prefix_path_unix: /c/strawberry_msvc_x86_64_release
+  ccache_version: 4.14.1
+  wix_version: 6.0.2
+
+jobs:
+  build-msi:
+    name: Build Windows MSI
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Download and extract Windows MSVC dependencies
+        shell: bash
+        run: curl -f -sS -L https://github.com/strawberrymusicplayer/strawberry-msvc-dependencies/releases/latest/download/strawberry-msvc-${{env.arch}}-release.tar.xz | tar -C /c -xJf -
+
+      - name: Prepare build environment
+        shell: bash
+        run: |
+          # copydlldeps.sh needs objdump.
+          cp /c/mingw64/bin/objdump.exe ${{env.prefix_path_unix}}/bin/
+          # Hide other toolchains and libraries so CMake only finds the MSVC dependencies, renaming is much faster than deleting.
+          for dir in /c/msys64 /c/mingw32 /c/mingw64 /c/clangarm64 /c/strawberry/c "/c/program files/OpenSSL"; do
+            if [ -e "${dir}" ]; then mv "${dir}" "${dir}.disabled"; fi
+          done
+          find "/c/program files (x86)/windows kits/10/include" "/c/program files (x86)/windows kits/10/lib" -type f \( -iname 'icu*.lib' -o -iname 'icu*.h' \) -delete
+          echo "enable_spotify=$(test -f "${{env.prefix_path_unix}}/lib/gstreamer-1.0/gstspotify.dll" && echo ON || echo OFF)" >> $GITHUB_ENV
+          key=$(openssl rand -hex 32)
+          echo "::add-mask::${key}"
+          echo "api_credentials_encryption_key=${key}" >> $GITHUB_ENV
+
+      - name: Cleanup PATH
+        uses: egor-tensin/cleanup-path@v5
+        with:
+          dirs: ${{env.prefix_path_backslash}}\bin;C:\Windows;C:\Windows\system32;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Program Files\PowerShell\7;C:\Program Files\Git\bin;C:\Program Files\CMake\bin;C:\Program Files\GitHub CLI;C:\Program Files\dotnet;C:\Users\runneradmin\.dotnet\tools
+
+      - name: Restore ccache
+        if: github.event_name != 'release'
+        uses: actions/cache@v6
+        with:
+          path: ${{runner.temp}}/ccache-dir
+          key: ccache-msi-${{env.arch}}-${{github.run_id}}
+          restore-keys: ccache-msi-${{env.arch}}-
+
+      - name: Enable ccache
+        if: github.event_name != 'release'
+        shell: bash
+        run: |
+          if ! curl -f -sS -L -o "${RUNNER_TEMP}/ccache.zip" "https://github.com/ccache/ccache/releases/download/v${{env.ccache_version}}/ccache-${{env.ccache_version}}-windows-x86_64.zip"; then
+            echo "::warning::Could not download ccache, building without ccache."
+            exit 0
+          fi
+          unzip -q "${RUNNER_TEMP}/ccache.zip" -d "${RUNNER_TEMP}/ccache"
+          ccache="$(cygpath -m "$(find "${RUNNER_TEMP}/ccache" -name ccache.exe | head -n 1)")"
+          echo "CCACHE_DIR=$(cygpath -m "${RUNNER_TEMP}/ccache-dir")" >> $GITHUB_ENV
+          echo "CCACHE_BASEDIR=$(cygpath -m "${GITHUB_WORKSPACE}")" >> $GITHUB_ENV
+          echo "CCACHE_NOHASHDIR=true" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=1G" >> $GITHUB_ENV
+          echo "CMAKE_C_COMPILER_LAUNCHER=${ccache}" >> $GITHUB_ENV
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=${ccache}" >> $GITHUB_ENV
+          echo "ccache=${ccache}" >> $GITHUB_ENV
+
+      - name: Setup MSVC Environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{env.msi_arch}}
+          sdk: 10.0.22621.0
+          vsversion: 2022
+
+      - name: Run CMake
+        shell: cmd
+        run: >
+          cmake -S . -B build -G "Ninja"
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="${{env.prefix_path_forwardslash}}/lib/cmake"
+          -DENABLE_WIN32_CONSOLE=OFF
+          -DPKG_CONFIG_EXECUTABLE="${{env.prefix_path_forwardslash}}/bin/pkg-config.exe"
+          -DICU_ROOT="${{env.prefix_path_forwardslash}}"
+          -DENABLE_GIO=OFF
+          -DENABLE_AUDIOCD=OFF
+          -DENABLE_MTP=OFF
+          -DENABLE_GPOD=OFF
+          -DENABLE_SPOTIFY=${{env.enable_spotify}}
+          -DCREATE_SOURCE_API_CREDENTIALS=OFF
+          -DAPI_CREDENTIALS_ENCRYPTION_KEY="${{env.api_credentials_encryption_key}}"
+          -DACOUSTID_API_KEY="${{secrets.ACOUSTID_API_KEY}}"
+          -DLASTFM_API_KEY="${{secrets.LASTFM_API_KEY}}"
+          -DLASTFM_SHARED_SECRET="${{secrets.LASTFM_SHARED_SECRET}}"
+          -DLISTENBRAINZ_CLIENT_ID="${{secrets.LISTENBRAINZ_CLIENT_ID}}"
+          -DLISTENBRAINZ_CLIENT_SECRET="${{secrets.LISTENBRAINZ_CLIENT_SECRET}}"
+          -DSPOTIFY_CLIENT_ID="${{secrets.SPOTIFY_CLIENT_ID}}"
+          -DSPOTIFY_CLIENT_SECRET="${{secrets.SPOTIFY_CLIENT_SECRET}}"
+          -DGENIUS_CLIENT_ID="${{secrets.GENIUS_CLIENT_ID}}"
+          -DGENIUS_CLIENT_SECRET="${{secrets.GENIUS_CLIENT_SECRET}}"
+          -DMUSIXMATCH_APP_ID="${{secrets.MUSIXMATCH_APP_ID}}"
+          -DMUSIXMATCH_APP_SECRET="${{secrets.MUSIXMATCH_APP_SECRET}}"
+          -DOPENTIDAL_CLIENT_ID="${{secrets.OPENTIDAL_CLIENT_ID}}"
+          -DOPENTIDAL_CLIENT_SECRET="${{secrets.OPENTIDAL_CLIENT_SECRET}}"
+          -DDISCOGS_CLIENT_ID="${{secrets.DISCOGS_CLIENT_ID}}"
+          -DDISCOGS_CLIENT_SECRET="${{secrets.DISCOGS_CLIENT_SECRET}}"
+          -DTIDAL_CLIENT_ID="${{secrets.TIDAL_CLIENT_ID}}"
+
+      - name: Build
+        shell: cmd
+        run: cmake --build build --config Release --parallel
+
+      - name: Show ccache statistics
+        if: env.ccache != ''
+        shell: bash
+        run: '"${ccache}" --show-stats'
+
+      - name: Stage files
+        shell: bash
+        run: |
+          set -e
+          prefix=${{env.prefix_path_unix}}
+          stage=build/stage
+          mkdir -p ${stage}/{gio-modules,platforms,styles,tls,sqldrivers,imageformats,gstreamer-plugins}
+
+          cp build/strawberry.exe dist/windows/strawberry.ico ${stage}/
+          cp ${prefix}/bin/{libssl-3*.dll,libcrypto-3*.dll,soup-3.0-0.dll,gst-launch-1.0.exe,gst-play-1.0.exe,gst-discoverer-1.0.exe,sqlite3.exe} ${stage}/
+          cp ${prefix}/lib/gio/modules/*.dll ${stage}/gio-modules/
+          cp ${prefix}/plugins/platforms/qwindows*.dll ${stage}/platforms/
+          cp ${prefix}/plugins/styles/qmodernwindowsstyle*.dll ${stage}/styles/
+          cp ${prefix}/plugins/tls/*.dll ${stage}/tls/
+          cp ${prefix}/plugins/sqldrivers/qsqlite*.dll ${stage}/sqldrivers/
+          cp ${prefix}/plugins/imageformats/*.dll ${stage}/imageformats/
+
+          # Ship the same GStreamer plugins as the NSIS installer.
+          plugins=$(sed -n '/Section "Gstreamer plugins"/,/SectionEnd/p' dist/windows/strawberry.nsi.in | sed -n '/!ifdef msvc/,/!endif ; MSVC/p' | grep -o '/oname=[^"]*' | cut -d= -f2)
+          for plugin in ${plugins}; do
+            if [ -f "${prefix}/lib/gstreamer-1.0/${plugin}" ]; then
+              cp "${prefix}/lib/gstreamer-1.0/${plugin}" ${stage}/gstreamer-plugins/
+            else
+              echo "::warning::GStreamer plugin ${plugin} is missing from the dependencies."
+            fi
+          done
+
+          # Deploy the Visual C++ runtime app-local instead of running vc_redist.
+          cp "$(cygpath -u "${VCToolsRedistDir}")"/${{env.msi_arch}}/Microsoft.VC*.CRT/*.dll ${stage}/
+
+          curl -f -sS -L -o build/copydlldeps.sh https://raw.githubusercontent.com/strawberrymusicplayer/strawberry-mxe/master/tools/copydlldeps.sh
+          bash build/copydlldeps.sh -c -d ${stage} -F ${stage} -F ${stage}/platforms -F ${stage}/styles -F ${stage}/tls -F ${stage}/sqldrivers -F ${stage}/imageformats -F ${stage}/gio-modules -F ${stage}/gstreamer-plugins -R ${prefix}/bin
+
+          find ${stage} -type f | sort
+
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version ${{env.wix_version}}
+
+      - name: Build MSI
+        shell: pwsh
+        run: dist/windows/build-msi.ps1 -StageDir build/stage -Arch ${{env.msi_arch}} -OutDir build/msi
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: strawberry-msi-${{env.msi_arch}}
+          path: build/msi/*.msi
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Attach MSI to release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{github.token}}
+        run: gh release upload "${{github.event.release.tag_name}}" build/msi/*.msi --clobber
