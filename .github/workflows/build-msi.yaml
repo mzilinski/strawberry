@@ -75,7 +75,7 @@ jobs:
 
       - name: Restore ccache
         if: github.event_name != 'release'
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ${{runner.temp}}/ccache-dir
           key: ccache-msi-${{env.arch}}-${{github.run_id}}
@@ -144,9 +144,16 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Show ccache statistics
-        if: env.ccache != ''
+        if: always() && env.ccache != ''
         shell: bash
         run: '"${ccache}" --show-stats'
+
+      - name: Save ccache
+        if: always() && env.ccache != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{runner.temp}}/ccache-dir
+          key: ccache-msi-${{env.arch}}-${{github.run_id}}
 
       - name: Stage files
         shell: bash
@@ -157,7 +164,7 @@ jobs:
           mkdir -p ${stage}/{gio-modules,platforms,styles,tls,sqldrivers,imageformats,gstreamer-plugins}
 
           cp build/strawberry.exe dist/windows/strawberry.ico ${stage}/
-          cp ${prefix}/bin/{libssl-3*.dll,libcrypto-3*.dll,soup-3.0-0.dll,gst-launch-1.0.exe,gst-play-1.0.exe,gst-discoverer-1.0.exe,sqlite3.exe} ${stage}/
+          cp ${prefix}/bin/{libssl-*.dll,libcrypto-*.dll,soup-3.0-0.dll,gst-launch-1.0.exe,gst-play-1.0.exe,gst-discoverer-1.0.exe,sqlite3.exe} ${stage}/
           cp ${prefix}/lib/gio/modules/*.dll ${stage}/gio-modules/
           cp ${prefix}/plugins/platforms/qwindows*.dll ${stage}/platforms/
           cp ${prefix}/plugins/styles/qmodernwindowsstyle*.dll ${stage}/styles/
