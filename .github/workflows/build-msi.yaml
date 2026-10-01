@@ -49,6 +49,11 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      # The version comes from git describe, forks often lack the release tags, then the updater offers the latest release as an update.
+      - name: Fetch upstream release tags
+        shell: bash
+        run: git fetch --tags --force https://github.com/strawberrymusicplayer/strawberry.git
+
       - name: Download and extract Windows MSVC dependencies
         shell: bash
         run: curl -f -sS -L https://github.com/strawberrymusicplayer/strawberry-msvc-dependencies/releases/latest/download/strawberry-msvc-${{env.arch}}-release.tar.xz | tar -C /c -xJf -
