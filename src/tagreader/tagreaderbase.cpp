@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2018-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,6 +18,8 @@
  */
 
 #include "config.h"
+
+#include <cmath>
 
 #include <QObject>
 #include <QByteArray>
@@ -50,17 +52,24 @@ float TagReaderBase::ConvertPOPMRating(const int POPM_rating) {
 
 int TagReaderBase::ConvertToPOPMRating(const float rating) {
 
-  if (rating < 0.20) return 0x00;
-  if (rating < 0.40) return 0x01;
-  if (rating < 0.60) return 0x40;
-  if (rating < 0.80) return 0x80;
-  if (rating < 1.0)  return 0xC0;
+  // Convert to whole stars, half stars are rounded down.
+  // A small tolerance is added before rounding down, since ratings computed with floats can be slightly lower, like 0.59999996 for 3 stars, which would otherwise be one star less.
+  const int stars = static_cast<int>(std::floor((rating * 5.0F) + 0.01F));
+
+  if (stars <= 0) return 0x00;
+  if (stars == 1) return 0x01;
+  if (stars == 2) return 0x40;
+  if (stars == 3) return 0x80;
+  if (stars == 4) return 0xC0;
 
   return 0xFF;
 
 }
 
-AlbumCoverTagData TagReaderBase::LoadAlbumCoverTagData(const QString &song_filename, const SaveTagCoverData &save_tag_cover_data) {
+TagReaderResult TagReaderBase::LoadAlbumCoverTagData(const QString &song_filename, const SaveTagCoverData &save_tag_cover_data, AlbumCoverTagData &cover) {
+
+  // Empty cover data means the embedded cover is removed, so a cover that can't be loaded is an error, not empty data, otherwise the existing embedded cover is removed.
+  cover = AlbumCoverTagData();
 
   const QString &cover_filename = save_tag_cover_data.cover_filename;
   QByteArray cover_data = save_tag_cover_data.cover_data;
@@ -71,40 +80,47 @@ AlbumCoverTagData TagReaderBase::LoadAlbumCoverTagData(const QString &song_filen
     QFile file(cover_filename);
     if (!file.open(QIODevice::ReadOnly)) {
       qLog(Error) << "Failed to open file" << cover_filename << "for reading:" << file.errorString();
-      return AlbumCoverTagData();
+      return TagReaderResult(TagReaderResult::ErrorCode::CustomError, QObject::tr("Could not open cover %1: %2").arg(cover_filename, file.errorString()));
     }
     cover_data = file.readAll();
     file.close();
+    if (cover_data.isEmpty()) {
+      qLog(Error) << "Cover" << cover_filename << "is empty";
+      return TagReaderResult(TagReaderResult::ErrorCode::CustomError, QObject::tr("Cover %1 is empty").arg(cover_filename));
+    }
   }
 
   if (!cover_data.isEmpty()) {
     if (cover_mimetype.isEmpty()) {
       cover_mimetype = QMimeDatabase().mimeTypeForData(cover_data).name();
     }
-    if (cover_mimetype == "image/jpeg"_L1) {
-      qLog(Debug) << "Using cover from JPEG data for" << song_filename;
-      return AlbumCoverTagData(cover_data, cover_mimetype);
-    }
-    if (cover_mimetype == "image/png"_L1) {
-      qLog(Debug) << "Using cover from PNG data for" << song_filename;
-      return AlbumCoverTagData(cover_data, cover_mimetype);
+    // JPEG and PNG data is used as it is, but only when it can be decoded as that format, since the mimetype can be wrong and the data can be corrupt.
+    QImage cover_image;
+    if (cover_mimetype == "image/jpeg"_L1 || cover_mimetype == "image/png"_L1) {
+      const char *format = cover_mimetype == "image/jpeg"_L1 ? "JPEG" : "PNG";
+      if (cover_image.loadFromData(cover_data, format)) {
+        qLog(Debug) << "Using cover from" << format << "data for" << song_filename;
+        cover = AlbumCoverTagData(cover_data, cover_mimetype);
+        return TagReaderResult::ErrorCode::Success;
+      }
+      qLog(Warning) << "Cover data for" << song_filename << "is not valid" << format << "data";
     }
     // Convert image to JPEG.
     qLog(Debug) << "Converting cover to JPEG data for" << song_filename;
-    QImage cover_image;
     if (!cover_image.loadFromData(cover_data)) {
       qLog(Error) << "Failed to load image from cover data for" << song_filename;
-      return AlbumCoverTagData();
+      return TagReaderResult(TagReaderResult::ErrorCode::CustomError, QObject::tr("Could not load cover image"));
     }
-    cover_data.clear();
-    QBuffer buffer(&cover_data);
-    if (buffer.open(QIODevice::WriteOnly)) {
-      cover_image.save(&buffer, "JPEG");
-      buffer.close();
+    QByteArray jpeg_data;
+    QBuffer buffer(&jpeg_data);
+    if (!buffer.open(QIODevice::WriteOnly) || !cover_image.save(&buffer, "JPEG") || jpeg_data.isEmpty()) {
+      qLog(Error) << "Failed to convert cover to JPEG for" << song_filename;
+      return TagReaderResult(TagReaderResult::ErrorCode::CustomError, QObject::tr("Could not convert cover image to JPEG"));
     }
-    return AlbumCoverTagData(cover_data, u"image/jpeg"_s);
+    buffer.close();
+    cover = AlbumCoverTagData(jpeg_data, u"image/jpeg"_s);
   }
 
-  return AlbumCoverTagData();
+  return TagReaderResult::ErrorCode::Success;
 
 }

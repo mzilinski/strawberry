@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -118,37 +118,41 @@ OrganizeFormat::GetFilenameForSongResult OrganizeFormat::GetFilenameForSong(cons
     return GetFilenameForSongResult();
   }
 
-  if (remove_problematic_) {
-    static const QRegularExpression regex_problematic_characters(QLatin1String(kProblematicCharactersRegex), QRegularExpression::PatternOption::CaseInsensitiveOption);
-    filepath = filepath.remove(regex_problematic_characters);
-  }
-  if (remove_non_fat_ || (remove_non_ascii_ && !allow_ascii_ext_)) filepath = Utilities::Transliterate(filepath);
-  if (remove_non_fat_) {
-    static const QRegularExpression regex_invalid_fat_characters(QLatin1String(kInvalidFatCharactersRegex), QRegularExpression::PatternOption::CaseInsensitiveOption);
-    filepath = filepath.remove(regex_invalid_fat_characters);
-  }
+  // Also used for the original filename, when nothing is left of the filename.
+  const auto remove_characters = [this](QString path) {
+    if (remove_problematic_) {
+      static const QRegularExpression regex_problematic_characters(QLatin1String(kProblematicCharactersRegex), QRegularExpression::PatternOption::CaseInsensitiveOption);
+      path = path.remove(regex_problematic_characters);
+    }
+    if (remove_non_fat_ || (remove_non_ascii_ && !allow_ascii_ext_)) path = Utilities::Transliterate(path);
+    if (remove_non_fat_) {
+      static const QRegularExpression regex_invalid_fat_characters(QLatin1String(kInvalidFatCharactersRegex), QRegularExpression::PatternOption::CaseInsensitiveOption);
+      path = path.remove(regex_invalid_fat_characters);
+    }
 
-  if (remove_non_ascii_) {
-    int ascii = 128;
-    if (allow_ascii_ext_) ascii = 255;
-    QString stripped;
-    for (int i = 0; i < filepath.length(); ++i) {
-      const QChar c = filepath[i];
-      if (c.unicode() < ascii) {
-        stripped.append(c);
-      }
-      else {
-        const QString decomposition = c.decomposition();
-        if (!decomposition.isEmpty() && decomposition[0].unicode() < ascii) {
-          stripped.append(decomposition[0]);
+    if (remove_non_ascii_) {
+      int ascii = 128;
+      if (allow_ascii_ext_) ascii = 255;
+      QString stripped;
+      for (int i = 0; i < path.length(); ++i) {
+        const QChar c = path[i];
+        if (c.unicode() < ascii) {
+          stripped.append(c);
+        }
+        else {
+          const QString decomposition = c.decomposition();
+          if (!decomposition.isEmpty() && decomposition[0].unicode() < ascii) {
+            stripped.append(decomposition[0]);
+          }
         }
       }
+      path = stripped;
     }
-    filepath = stripped;
-  }
 
-  // Remove repeated whitespaces in the filepath.
-  filepath = filepath.simplified();
+    // Remove repeated whitespaces.
+    return path.simplified();
+  };
+  filepath = remove_characters(filepath);
 
   // Fixup extension
   QFileInfo info(filepath);
@@ -168,17 +172,23 @@ OrganizeFormat::GetFilenameForSongResult OrganizeFormat::GetFilenameForSong(cons
   filepath.append(info.completeBaseName());
 
   // Fix any parts of the path that start with dots.
-  QStringList parts_old = filepath.split(u'/');
-  QStringList parts_new;
-  for (int i = 0; i < parts_old.count(); ++i) {
-    QString part = parts_old[i];
-    for (int j = 0; j < kInvalidPrefixCharactersCount; ++j) {
-      if (part.startsWith(QLatin1Char(kInvalidPrefixCharacters[j]))) {
-        part = part.remove(0, 1);
-        break;
-      }
+  // All of them are removed, together with whitespace, so a tag value like "..." or ". .." can't become "..", which would point outside the destination directory.
+  const auto remove_invalid_prefix = [](QString part) {
+    while (!part.isEmpty() && (part.front().isSpace() || QLatin1String(kInvalidPrefixCharacters).contains(part.front()))) {
+      part.remove(0, 1);
     }
-    part = part.trimmed();
+    return part.trimmed();
+  };
+  const QStringList parts_old = filepath.split(u'/');
+  QStringList parts_new;
+  for (qsizetype i = 0; i < parts_old.count(); ++i) {
+    QString part = remove_invalid_prefix(parts_old[i]);
+    if (part.isEmpty()) {
+      // Skip empty directories, but keep a filename, use the original filename when nothing is left.
+      if (i < parts_old.count() - 1) continue;
+      part = remove_invalid_prefix(remove_characters(QFileInfo(song.basefilename()).completeBaseName()));
+      if (part.isEmpty()) return GetFilenameForSongResult();
+    }
     parts_new.append(part);
   }
   filepath = parts_new.join(u'/');
@@ -198,39 +208,44 @@ OrganizeFormat::GetFilenameForSongResult OrganizeFormat::GetFilenameForSong(cons
 
 QString OrganizeFormat::ParseBlock(QString block, const Song &song, bool *have_tagdata, bool *any_empty) const {
 
-  // Find any blocks first
-  qint64 pos = 0;
   static const QRegularExpression block_regexp(QString::fromLatin1(kBlockPattern));
-  QRegularExpressionMatch re_match;
-  for (re_match = block_regexp.match(block, pos); re_match.hasMatch(); re_match = block_regexp.match(block, pos)) {
-    pos = re_match.capturedStart();
-    // Recursively parse the block
-    bool empty = false;
-    QString value = ParseBlock(re_match.captured(1), song, have_tagdata, &empty);
-    if (empty) value = ""_L1;
-
-    // Replace the block's value
-    block.replace(pos, re_match.capturedLength(), value);
-    pos += value.length();
-  }
-
-  // Now look for tags
-  bool empty = false;
-  pos = 0;
   static const QRegularExpression tag_regexp(QString::fromLatin1(kTagPattern));
-  for (re_match = tag_regexp.match(block, pos); re_match.hasMatch(); re_match = tag_regexp.match(block, pos)) {
-    pos = re_match.capturedStart();
-    const QString tag = re_match.captured(1);
-    const QString value = TagValue(tag, song);
-    if (value.isEmpty()) {
-      empty = true;
+
+  // Replace blocks and tags in one pass from left to right, so values that are already replaced are not parsed again.
+  // Otherwise a "%" in the value of a block, like in "100% Band", would be parsed as a tag.
+  bool empty = false;
+  qint64 pos = 0;
+  while (pos < block.length()) {
+    const QRegularExpressionMatch block_match = block_regexp.match(block, pos);
+    const QRegularExpressionMatch tag_match = tag_regexp.match(block, pos);
+    if (!block_match.hasMatch() && !tag_match.hasMatch()) break;
+
+    qint64 start = 0;
+    qint64 length = 0;
+    QString value;
+    if (block_match.hasMatch() && (!tag_match.hasMatch() || block_match.capturedStart() < tag_match.capturedStart())) {
+      // Recursively parse the block
+      bool block_empty = false;
+      value = ParseBlock(block_match.captured(1), song, have_tagdata, &block_empty);
+      if (block_empty) value.clear();
+      start = block_match.capturedStart();
+      length = block_match.capturedLength();
     }
-    else if (have_tagdata && kUniqueTags.contains(tag)) {
-      *have_tagdata = true;
+    else {
+      const QString tag = tag_match.captured(1);
+      value = TagValue(tag, song);
+      if (value.isEmpty()) {
+        empty = true;
+      }
+      else if (have_tagdata && kUniqueTags.contains(tag)) {
+        *have_tagdata = true;
+      }
+      start = tag_match.capturedStart();
+      length = tag_match.capturedLength();
     }
 
-    block.replace(pos, re_match.capturedLength(), value);
-    pos += value.length();
+    block.replace(start, length, value);
+    pos = start + value.length();
   }
 
   if (any_empty) {

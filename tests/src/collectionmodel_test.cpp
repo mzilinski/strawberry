@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2019, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,9 +26,12 @@
 
 #include <QMap>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QThread>
 #include <QSignalSpy>
+#include <QHash>
+#include <QSet>
 #include <QTimer>
 #include <QEventLoop>
 #include <QElapsedTimer>
@@ -37,16 +40,21 @@
 #include <QItemSelectionModel>
 #include <QScrollBar>
 #include <QTreeView>
+#include <QTemporaryDir>
+#include <QThreadPool>
+#include <QRecursiveMutex>
 #include <QtDebug>
 
 #include "includes/scoped_ptr.h"
 #include "includes/shared_ptr.h"
 #include "core/logging.h"
+#include "core/database.h"
 #include "core/memorydatabase.h"
-#include "collection/collectionlibrary.h"
+#include "collection/collectionmanager.h"
 #include "collection/collectionbackend.h"
 #include "collection/collectionmodel.h"
 #include "collection/collectionfilter.h"
+#include "collection/collectiontreeview.h"
 
 using namespace Qt::Literals::StringLiterals;
 using std::make_unique;
@@ -56,6 +64,20 @@ using std::make_shared;
 
 namespace {
 
+// Makes the collection model of the view settable, it's set by the subclasses of the view.
+class TestCollectionTreeView : public CollectionTreeView {
+ public:
+  explicit TestCollectionTreeView(CollectionModel *collection_model) {
+    SetCollectionModel(collection_model);
+    setModel(collection_model->filter());
+  }
+
+ protected:
+  QString EmptyTitleText() const override { return QString(); }
+  QString EmptyText() const override { return QString(); }
+  void EmptyClicked() override {}
+};
+
 class CollectionModelTest : public ::testing::Test {
  public:
   CollectionModelTest() : collection_filter_(nullptr), added_dir_(false), song_number_(0) {}
@@ -64,12 +86,51 @@ class CollectionModelTest : public ::testing::Test {
   void SetUp() override {
     database_ = make_shared<MemoryDatabase>(nullptr);
     backend_ = make_shared<CollectionBackend>();
-    backend_->Init(database_, nullptr, Song::Source::Collection, QLatin1String(CollectionLibrary::kSongsTable), QLatin1String(CollectionLibrary::kDirsTable), QLatin1String(CollectionLibrary::kSubdirsTable));
+    backend_->Init(database_, nullptr, Song::Source::Collection, QLatin1String(CollectionManager::kSongsTable), QLatin1String(CollectionManager::kDirsTable), QLatin1String(CollectionManager::kSubdirsTable));
     model_ = make_unique<CollectionModel>(backend_, nullptr);
     collection_filter_ = model_->filter();
 
     added_dir_ = false;
 
+  }
+
+  void TearDown() override {
+
+    // Database doesn't close its connection when deleted, unlike MemoryDatabase, so close it, also after a failed assertion, otherwise the database file stays open.
+    model_.reset();
+    backend_.reset();
+    if (database_) {
+      database_->Close();
+      database_.reset();
+    }
+
+  }
+
+  // Waits until the model was reset the given number of times, since the update timer is not active while the songs are loaded, so Drain() can return before they are added.
+  // Each reload resets the model twice, when it starts and when the songs are loaded.
+  static bool WaitForResets(QSignalSpy *spy, const int count, const int timeout_ms = 60000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (spy->count() < count) {
+      if (timer.elapsed() > timeout_ms) return false;
+      spy->wait(100);
+    }
+    return true;
+  }
+
+  // Uses a database file instead of the memory database, since the songs are loaded in another thread, which has its own connection, and a memory database is not shared between connections.
+  void UseDatabaseFile() {
+    ASSERT_TRUE(temp_dir_.isValid());
+    // Delete the memory database before creating the new one, since deleting a database logs all connections which are still open, also the ones of the new database.
+    model_.reset();
+    backend_.reset();
+    database_.reset();
+    database_ = make_shared<Database>(nullptr, nullptr, temp_dir_.filePath(u"strawberry.db"_s));
+    backend_ = make_shared<CollectionBackend>();
+    backend_->Init(database_, nullptr, Song::Source::Collection, QLatin1String(CollectionManager::kSongsTable), QLatin1String(CollectionManager::kDirsTable), QLatin1String(CollectionManager::kSubdirsTable));
+    model_ = make_unique<CollectionModel>(backend_, nullptr);
+    collection_filter_ = model_->filter();
+    added_dir_ = false;
   }
 
   Song AddSong(Song &song) {
@@ -146,6 +207,7 @@ class CollectionModelTest : public ::testing::Test {
     }
   }
 
+  QTemporaryDir temp_dir_;
   SharedPtr<Database> database_;
   SharedPtr<CollectionBackend> backend_;
   ScopedPtr<CollectionModel> model_;
@@ -398,6 +460,86 @@ TEST_F(CollectionModelTest, BulkUpdateSuppressesPerRowSignals) {
 
 }
 
+// Regression test: removing many scattered siblings under one parent in bulk mode must leave the remaining siblings at consecutive rows, addressable through the model.
+TEST_F(CollectionModelTest, BulkRemoveScatteredSiblings) {
+
+  AddSong(u"seed"_s, u"seed"_s, u"seed"_s, 1);
+
+  // All songs in one album, so they are siblings under the same album node.
+  const int n = 2400;
+  SongList songs;
+  songs.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    Song song;
+    song.Init(u"sibling_"_s + QString::number(i), u"sibling_artist"_s, u"sibling_album"_s, 123);
+    song.set_albumartist(u"sibling_artist"_s);
+    song.set_directory_id(1);
+    song.set_mtime(1);
+    song.set_ctime(1);
+    song.set_url(QUrl(u"file:///tmp/sibling_"_s + QString::number(i) + u".flac"_s));
+    song.set_filesize(1);
+    songs << song;  // clazy:exclude=reserve-candidates
+  }
+  backend_->AddOrUpdateSongs(songs);
+  Drain();
+
+  QHash<int, CollectionItem*> nodes_by_number;
+  const QList<CollectionItem*> song_nodes = model_->song_nodes();
+  for (CollectionItem *node : song_nodes) {
+    if (node->metadata.title().startsWith(u"sibling_"_s)) {
+      nodes_by_number.insert(node->metadata.title().mid(8).toInt(), node);
+    }
+  }
+  ASSERT_EQ(n, nodes_by_number.count());
+  CollectionItem *album = nodes_by_number.value(0)->parent;
+  ASSERT_TRUE(album);
+  ASSERT_EQ(n, album->children.count());
+
+  // Remove every other song, which is more than the bulk threshold, and scattered over the siblings.
+  SongList songs_to_delete;
+  for (int i = 0; i < n; i += 2) {
+    songs_to_delete << nodes_by_number.value(i)->metadata;
+  }
+
+  // The remaining siblings must keep their order, so expect the current order without the removed songs.
+  QStringList expected_titles;
+  for (CollectionItem *child : std::as_const(album->children)) {
+    if (child->metadata.title().mid(8).toInt() % 2 == 1) {
+      expected_titles << child->metadata.title();
+    }
+  }
+
+  // A persistent index of a remaining song must be moved to its new row.
+  CollectionItem *kept_node = nodes_by_number.value(n - 1);
+  const QPersistentModelIndex kept_index(model_->ItemToIndex(kept_node));
+  ASSERT_TRUE(kept_index.isValid());
+
+  QSignalSpy spy_layout(&*model_, &CollectionModel::layoutChanged);
+  backend_->DeleteSongs(songs_to_delete);
+  Drain();
+  EXPECT_GE(spy_layout.count(), 1);
+
+  // The remaining siblings are at consecutive rows, and each row is addressable through the model.
+  ASSERT_EQ(n / 2, album->children.count());
+  const QModelIndex album_index = model_->ItemToIndex(album);
+  ASSERT_EQ(n / 2, model_->rowCount(album_index));
+  QStringList titles;
+  for (int row = 0; row < album->children.count(); ++row) {
+    CollectionItem *child = album->children[row];
+    EXPECT_EQ(row, child->row);
+    const QModelIndex child_index = model_->index(row, 0, album_index);
+    EXPECT_EQ(child, model_->IndexToItem(child_index));
+    EXPECT_EQ(album_index, model_->parent(child_index));
+    titles << child->metadata.title();
+  }
+  EXPECT_EQ(expected_titles, titles);
+
+  ASSERT_TRUE(kept_index.isValid());
+  EXPECT_EQ(kept_node, model_->IndexToItem(kept_index));
+  EXPECT_EQ(kept_node->row, kept_index.row());
+
+}
+
 // A batch below the threshold keeps the lightweight per-row path (no layout change, no reset).
 TEST_F(CollectionModelTest, SmallUpdateEmitsPerRowSignals) {
 
@@ -443,6 +585,99 @@ TEST_F(CollectionModelTest, LargeBatchProducesSingleLayoutChange) {
 // folding it in would tear the model down mid-layout-change and leave the begin/end signals of either transaction unbalanced.
 // NOTE: data preservation across the Reset cannot be checked here - the reload runs on a worker thread, which opens its own connection to the :memory: test DB and so sees it empty;
 // against a real file DB that reload restores the full collection, which is why a dropped trailing update is not actually lost in production.
+TEST_F(CollectionModelTest, FilterModeChangedWhileLoadingDoesNotAddOldResults) {
+
+  UseDatabaseFile();
+  AddSong(u"Title 1"_s, u"Artist 1"_s, u"Album 1"_s, 1);
+  AddSong(u"Title 2"_s, u"Artist 2"_s, u"Album 2"_s, 1);
+  Drain();
+  ASSERT_EQ(2, model_->song_nodes().count());
+
+  // Change the filter mode while the songs are loaded for the reset, the songs loaded for the old filter mode should not be added.
+  bool filter_mode_changed = false;
+  QSignalSpy spy_reset(&*model_, &CollectionModel::modelReset);
+  const QMetaObject::Connection connection = QObject::connect(&*model_, &CollectionModel::modelReset, &*model_, [this, &filter_mode_changed]() {
+    if (filter_mode_changed) return;
+    filter_mode_changed = true;
+    model_->SetFilterMode(CollectionFilterOptions::FilterMode::Duplicates);
+  });
+  model_->SetGroupBy(model_->GetGroupBy());
+  // The reload, and the reload for the changed filter mode.
+  EXPECT_TRUE(WaitForResets(&spy_reset, 4));
+  Drain();
+  // The model is reset when it's deleted after the test, when the captured variables are gone.
+  QObject::disconnect(connection);
+
+  ASSERT_TRUE(filter_mode_changed);
+  // None of the songs are duplicates.
+  EXPECT_EQ(0, model_->song_nodes().count());
+
+}
+
+// The songs are loaded in a thread pool, the model can be deleted while they are loaded, the loading must not use the model.
+TEST_F(CollectionModelTest, DeletedWhileLoading) {
+
+  UseDatabaseFile();
+  AddSong(u"Title 1"_s, u"Artist 1"_s, u"Album 1"_s, 1);
+  Drain();
+
+  // Hold the database lock, so the songs are still loaded when the model is deleted.
+  QRecursiveMutex *mutex = backend_->db()->Mutex();
+  mutex->lock();
+
+  // The model is reset when the songs are loaded.
+  QSignalSpy spy_reset(&*model_, &CollectionModel::modelReset);
+  model_->SetGroupBy(model_->GetGroupBy());
+  const bool loading = WaitForResets(&spy_reset, 1, 5000);
+
+  model_.reset();
+  mutex->unlock();
+  ASSERT_TRUE(loading);
+
+  // Wait for the loading to finish, it uses the backend, which is kept until then.
+  QThreadPool::globalInstance()->waitForDone();
+  QCoreApplication::processEvents();
+
+}
+
+TEST_F(CollectionModelTest, SongRemovedWhileLoadingIsNotAddedAgain) {
+
+  UseDatabaseFile();
+  AddSong(u"Title 1"_s, u"Artist 1"_s, u"Album 1"_s, 1);
+  AddSong(u"Title 2"_s, u"Artist 2"_s, u"Album 2"_s, 1);
+  Drain();
+  ASSERT_EQ(2, model_->song_nodes().count());
+
+  // The songs in the model have their IDs from the database.
+  Song song1;
+  Song song2;
+  for (const CollectionItem *node : model_->song_nodes()) {
+    if (node->metadata.title() == u"Title 1"_s) song1 = node->metadata;
+    else song2 = node->metadata;
+  }
+  ASSERT_NE(-1, song1.id());
+  ASSERT_NE(-1, song2.id());
+
+  // Remove a song while the songs are loaded for the reset, the loaded songs still have it, so it should be removed after they are added.
+  bool removed = false;
+  QSignalSpy spy_reset(&*model_, &CollectionModel::modelReset);
+  const QMetaObject::Connection connection = QObject::connect(&*model_, &CollectionModel::modelReset, &*model_, [this, &removed, song1]() {
+    if (removed) return;
+    removed = true;
+    model_->RemoveSongs(SongList() << song1);
+  });
+  model_->SetGroupBy(model_->GetGroupBy());
+  EXPECT_TRUE(WaitForResets(&spy_reset, 2));
+  Drain();
+  // The model is reset when it's deleted after the test, when the captured variables are gone.
+  QObject::disconnect(connection);
+
+  ASSERT_TRUE(removed);
+  ASSERT_EQ(1, model_->song_nodes().count());
+  EXPECT_EQ(song2.id(), model_->song_nodes().constFirst()->metadata.id());
+
+}
+
 TEST_F(CollectionModelTest, ResetMixedIntoBulkBatchDoesNotNestResets) {
 
   AddSong(u"seed"_s, u"seed"_s, u"seed"_s, 1);
@@ -624,6 +859,39 @@ TEST_F(CollectionModelTest, BulkUpdatePreservesViewState) {
 
   // The view was not thrown back to the top (a model reset would do that).
   EXPECT_GT(view.verticalScrollBar()->value(), 0);
+
+}
+
+// Regression test: actions on the selection, like deleting or organizing the files, used the songs of the selected containers in the collection model, including songs hidden by the search.
+TEST_F(CollectionModelTest, SelectedSongsExcludeSongsHiddenByFilter) {
+
+  AddSong(u"Matching"_s, u"Artist"_s, u"Album"_s, 123);
+  AddSong(u"Hidden"_s, u"Artist"_s, u"Album"_s, 123);
+
+  TestCollectionTreeView view(&*model_);
+  collection_filter_->SetFilterString(u"matching"_s);
+
+  const auto artist_index = [this]() {
+    for (int row = 0; row < collection_filter_->rowCount(QModelIndex()); ++row) {
+      const QModelIndex idx = collection_filter_->index(row, 0, QModelIndex());
+      if (idx.data().toString() == u"Artist"_s) return idx;
+    }
+    return QModelIndex();
+  };
+
+  // Select the artist, the only artist shown by the search.
+  ASSERT_TRUE(artist_index().isValid());
+  view.selectionModel()->select(artist_index(), QItemSelectionModel::ClearAndSelect);
+
+  const SongList songs = view.GetSelectedSongs();
+  ASSERT_EQ(1, songs.count());
+  EXPECT_EQ(u"Matching"_s, songs.first().title());
+
+  // Without a search, all songs of the artist are included.
+  collection_filter_->SetFilterString(QString());
+  ASSERT_TRUE(artist_index().isValid());
+  view.selectionModel()->select(artist_index(), QItemSelectionModel::ClearAndSelect);
+  EXPECT_EQ(2, view.GetSelectedSongs().count());
 
 }
 

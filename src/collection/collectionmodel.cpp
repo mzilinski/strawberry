@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2018-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@
 
 #include <QObject>
 #include <QtGlobal>
+#include <QtAlgorithms>
 #include <QtConcurrentRun>
 #include <QThread>
 #include <QMutex>
@@ -128,6 +129,7 @@ CollectionModel::CollectionModel(const SharedPtr<CollectionBackend> backend, con
   QObject::connect(&*backend_, &CollectionBackend::TotalAlbumCountUpdated, this, &CollectionModel::TotalAlbumCountUpdatedSlot);
   QObject::connect(&*backend_, &CollectionBackend::SongsStatisticsChanged, this, &CollectionModel::AddReAddOrUpdate);
   QObject::connect(&*backend_, &CollectionBackend::SongsRatingChanged, this, &CollectionModel::AddReAddOrUpdate);
+  QObject::connect(&*backend_, &CollectionBackend::SongsLyricsChanged, this, &CollectionModel::AddReAddOrUpdate);
 
   backend_->UpdateTotalSongCountAsync();
   backend_->UpdateTotalArtistCountAsync();
@@ -194,15 +196,26 @@ void CollectionModel::ResetInternal() {
 
   loading_ = true;
 
+  // Begin the reset before switching to the new options, so the items that are about to be removed are still described with the options they were built with.
+  BeginReset();
+
   options_active_ = options_current_;
 
-  BeginReset();
   // Show a loading indicator in the model.
   CollectionItem *loading = new CollectionItem(CollectionItem::Type::LoadingIndicator, root_);
   loading->display_text = tr("Loading...");
   EndReset();
 
   LoadSongsFromSqlAsync();
+
+}
+
+QModelIndex CollectionModel::IndexOfSong(const int song_id) const {
+
+  const QMap<int, CollectionItem*>::const_iterator it = song_nodes_.constFind(song_id);
+  if (it == song_nodes_.constEnd()) return QModelIndex();
+
+  return ItemToIndex(it.value());
 
 }
 
@@ -852,6 +865,25 @@ void CollectionModel::RemoveSongsInternal(const SongList &songs) {
 
 void CollectionModel::RemoveSiblingNodes(CollectionItem *parent, QList<CollectionItem*> nodes) {
 
+  if (bulk_mode_) {
+    // No rows are removed one range at a time in bulk mode, it ends with one layout change, so take all the nodes out in one pass and number the remaining rows once.
+    // Renumbering after each range would go through all the rows after it for each range.
+    const QSet<CollectionItem*> nodes_to_remove(nodes.begin(), nodes.end());
+    QList<CollectionItem*> remaining_children;
+    remaining_children.reserve(parent->children.count() - nodes_to_remove.count());
+    for (CollectionItem *child : std::as_const(parent->children)) {
+      if (nodes_to_remove.contains(child)) {
+        delete child;
+      }
+      else {
+        child->row = static_cast<int>(remaining_children.count());
+        remaining_children << child;
+      }
+    }
+    parent->children = remaining_children;
+    return;
+  }
+
   // Sort by row descending so each contiguous-range removal doesn't shift later ranges.
   std::sort(nodes.begin(), nodes.end(), [](CollectionItem *a, CollectionItem *b) {
     return a->row > b->row;
@@ -868,14 +900,14 @@ void CollectionModel::RemoveSiblingNodes(CollectionItem *parent, QList<Collectio
     }
     const int bottom_row = top_row - run_count + 1;
 
-    if (!bulk_mode_) beginRemoveRows(parent_index, bottom_row, top_row);
-    for (int r = top_row; r >= bottom_row; --r) {
-      delete parent->children.takeAt(r);
-    }
+    // The rows after the range must be numbered right before endRemoveRows(), views and proxies can map their items while handling the removal.
+    beginRemoveRows(parent_index, bottom_row, top_row);
+    qDeleteAll(parent->children.cbegin() + bottom_row, parent->children.cbegin() + top_row + 1);
+    parent->children.remove(bottom_row, run_count);
     for (int r = bottom_row; r < parent->children.count(); ++r) {
       parent->children[r]->row = r;
     }
-    if (!bulk_mode_) endRemoveRows();
+    endRemoveRows();
 
     i += run_count;
   }
@@ -970,21 +1002,21 @@ CollectionItem *CollectionModel::CreateCompilationArtistNode(CollectionItem *par
 
 void CollectionModel::LoadSongsFromSqlAsync() {
 
-  QFuture<SongList> future = QtConcurrent::run(&CollectionModel::LoadSongsFromSql, this, options_active_.filter_options);
+  QFuture<SongList> future = QtConcurrent::run(&CollectionModel::LoadSongsFromSql, backend_, options_active_.filter_options);
   QFutureWatcher<SongList> *watcher = new QFutureWatcher<SongList>(this);
   QObject::connect(watcher, &QFutureWatcher<SongList>::finished, this, &CollectionModel::LoadSongsFromSqlAsyncFinished);
   watcher->setFuture(future);
 
 }
 
-SongList CollectionModel::LoadSongsFromSql(const CollectionFilterOptions &filter_options) {
+SongList CollectionModel::LoadSongsFromSql(const SharedPtr<CollectionBackend> backend, const CollectionFilterOptions &filter_options) {
 
   SongList songs;
 
   {
-    QMutexLocker l(backend_->db()->Mutex());
-    QSqlDatabase db(backend_->db()->Connect());
-    CollectionQuery q(db, backend_->songs_table(), filter_options);
+    QMutexLocker l(backend->db()->Mutex());
+    QSqlDatabase db(backend->db()->Connect());
+    CollectionQuery q(db, backend->songs_table(), filter_options);
     q.SetColumnSpec(u"%songs_table.ROWID, "_s + Song::kColumnSpec);
     if (q.Exec()) {
       while (q.Next()) {
@@ -994,12 +1026,13 @@ SongList CollectionModel::LoadSongsFromSql(const CollectionFilterOptions &filter
       }
     }
     else {
-      backend_->ReportErrors(q);
+      backend->ReportErrors(q);
     }
   }
 
-  if (QThread::currentThread() != thread() && QThread::currentThread() != backend_->thread()) {
-    backend_->db()->Close();
+  // Close the connection of the thread pool thread.
+  if (QThread::currentThread() != backend->thread()) {
+    backend->db()->Close();
   }
 
   return songs;
@@ -1013,10 +1046,22 @@ void CollectionModel::LoadSongsFromSqlAsyncFinished() {
   watcher->deleteLater();
 
   BeginReset();
-  ScheduleAddSongs(songs);
   EndReset();
 
   loading_ = false;
+
+  // When the options changed while loading, a reset is queued, which loads the songs again, so these songs are for the old options, for example without the duplicates filter.
+  const bool reset_pending = std::any_of(updates_.cbegin(), updates_.cend(), [](const CollectionModelUpdate &update) { return update.type == CollectionModelUpdate::Type::Reset; });
+  if (!reset_pending) {
+    // Add the loaded songs before the updates queued while loading, so those are applied after them, otherwise a song removed while loading is added again by the loaded songs.
+    QList<CollectionModelUpdate> load_updates;
+    for (qint64 i = 0; i < songs.count(); i += 400LL) {
+      load_updates << CollectionModelUpdate(CollectionModelUpdate::Type::Add, songs.mid(i, std::min(songs.count() - i, 400LL)));
+    }
+    for (qint64 i = load_updates.count() - 1; i >= 0; --i) {
+      updates_.prepend(load_updates.at(i));
+    }
+  }
 
   if (!updates_.isEmpty() && !timer_update_->isActive()) {
     timer_update_->start();

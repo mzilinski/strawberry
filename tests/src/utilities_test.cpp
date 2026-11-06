@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2019-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,19 +23,29 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
+#include <QStringConverter>
 #include <QUrl>
 #include <QDateTime>
 #include <QRegularExpression>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QDir>
 #include <QtDebug>
 
 #include "test_utils.h"
 #include "utilities/envutils.h"
 #include "utilities/strutils.h"
 #include "utilities/timeutils.h"
+#include "utilities/lrcutils.h"
 #include "utilities/randutils.h"
 #include "utilities/cryptutils.h"
 #include "utilities/colorutils.h"
 #include "utilities/transliterate.h"
+#include "utilities/textencodingutils.h"
+#include "utilities/coverutils.h"
+#include "utilities/fileutils.h"
 #include "core/logging.h"
 #include "core/temporaryfile.h"
 
@@ -160,6 +170,18 @@ TEST(UtilitiesTest, DecodeHtmlEntities) {
   ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#60;"_s), u"<"_s);
   ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&gt;"_s), u">"_s);
   ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#62;"_s), u">"_s);
+  // Escaped entities are decoded once only.
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&amp;lt;"_s), u"&lt;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&amp;quot;"_s), u"&quot;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#38;gt;"_s), u"&gt;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&amp;#38;"_s), u"&#38;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&amp;amp;"_s), u"&amp;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#38;amp;"_s), u"&amp;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#38;lt;"_s), u"&lt;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#38;#60;"_s), u"&#60;"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"&#x27;&apos;&#39;"_s), u"'''"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"Unknown &nbsp; and &amp stay"_s), u"Unknown &nbsp; and &amp stay"_s);
+  ASSERT_EQ(Utilities::DecodeHtmlEntities(u"Tom &amp; Jerry &lt;3"_s), u"Tom & Jerry <3"_s);
 
 }
 
@@ -284,6 +306,12 @@ TEST(UtilitiesTest, ReplaceMessage) {
   ASSERT_EQ(Utilities::ReplaceMessage(u"%title% - %artist%"_s, song, ""_L1), song.title() + u" - "_s + song.artist());
   ASSERT_EQ(Utilities::ReplaceMessage(u"%artistsort% - %albumartistsort%"_s, song, ""_L1), song.artistsort() + u" - "_s + song.albumartistsort());
 
+  // Variables in the values themselves are not replaced.
+  Song song_with_variable;
+  song_with_variable.set_title(u"Title %album%"_s);
+  song_with_variable.set_album(u"Album"_s);
+  ASSERT_EQ(Utilities::ReplaceMessage(u"%title% / %album%"_s, song_with_variable, ""_L1), u"Title %album% / Album"_s);
+
 }
 
 TEST(UtilitiesTest, TemporaryFile) {
@@ -320,5 +348,217 @@ TEST(UtilitiesTest, RedactUrls) {
   EXPECT_EQ(Utilities::RedactUrls(u"Could not open file:///music/100%.flac for reading."_s), u"Could not open file:///music/100%.flac for reading."_s);
   EXPECT_EQ(Utilities::RedactUrls(u"First http://a.example.com/x?t=1 and second https://user:pw@b.example.com/y"_s), u"First http://a.example.com/x and second https://b.example.com/y"_s);
   EXPECT_EQ(Utilities::RedactUrls(u"No URL here."_s), u"No URL here."_s);
+  // Subsonic and Qobuz send the credentials in the query, and QNetworkReply::errorString() includes the URL for HTTP errors.
+  EXPECT_EQ(Utilities::RedactUrls(u"Error transferring https://example.com/rest/getCoverArt?u=user&p=enc:736563726574&v=1.13.0&c=Strawberry&f=json&id=al-1 - server replied: Not Found"_s), u"Error transferring https://example.com/rest/getCoverArt - server replied: Not Found"_s);
+  EXPECT_EQ(Utilities::RedactUrls(u"Error transferring https://example.com/rest/ping?u=user&t=26719a1196d2a940705a59634eb18eab&s=c19b2d - server replied: Unauthorized"_s), u"Error transferring https://example.com/rest/ping - server replied: Unauthorized"_s);
 
 }
+
+TEST(UtilitiesTest, TextFromData) {
+
+  // Cyrillic text in windows-1251.
+  const QString windows1251_text = Utilities::TextFromData(QByteArray("REM GENRE Punk\r\nREM DATE 2007\r\nPERFORMER \"\xc3\xf0\xe0\xe6\xe4\xe0\xed\xf1\xea\xe0\xff \xce\xe1\xee\xf0\xee\xed\xe0\"\r\nTITLE \"\xc7\xe0\xf7\xe5\xec \xf1\xed\xff\xf2\xf1\xff \xf1\xed\xfb\"\r\nFILE \"\xc3\xf0\xe0\xe6\xe4\xe0\xed\xf1\xea\xe0\xff \xce\xe1\xee\xf0\xee\xed\xe0 - \xc7\xe0\xf7\xe5\xec \xf1\xed\xff\xf2\xf1\xff \xf1\xed\xfb.flac\" WAVE\r\n  TRACK 01 AUDIO\r\n    TITLE \"\xcc\xfb \xe8\xe4\xb8\xec\"\r\n    INDEX 01 00:00:00\r\n"));
+  EXPECT_TRUE(windows1251_text.contains(u"PERFORMER \"Гражданская Оборона\""_s));
+  EXPECT_TRUE(windows1251_text.contains(u"FILE \"Гражданская Оборона - Зачем снятся сны.flac\" WAVE"_s));
+  EXPECT_TRUE(windows1251_text.contains(u"TITLE \"Мы идём\""_s));
+
+  // German text in ISO-8859-1.
+  const QString latin1_text = Utilities::TextFromData(QByteArray("PERFORMER \"Die \xc4rzte\"\r\nTITLE \"Ger\xe4usch\"\r\nFILE \"Die \xc4rzte - Ger\xe4usch.flac\" WAVE\r\n  TRACK 01 AUDIO\r\n    TITLE \"Unrockbar\"\r\n  TRACK 02 AUDIO\r\n    TITLE \"Nichts in der Welt\"\r\n  TRACK 03 AUDIO\r\n    TITLE \"Dein Vampyr\"\r\n"));
+  EXPECT_TRUE(latin1_text.contains(u"PERFORMER \"Die Ärzte\""_s));
+  EXPECT_TRUE(latin1_text.contains(u"TITLE \"Geräusch\""_s));
+
+  // UTF-8 with and without a byte order mark.
+  EXPECT_EQ(Utilities::TextFromData(u"TITLE \"Мы идём\""_s.toUtf8()), u"TITLE \"Мы идём\""_s);
+  EXPECT_EQ(Utilities::TextFromData(QByteArray("\xef\xbb\xbf") + u"TITLE \"Мы идём\""_s.toUtf8()), u"TITLE \"Мы идём\""_s);
+
+  // UTF-16 without a byte order mark.
+  const QString utf16_text = u"PERFORMER \"Гражданская Оборона\"\r\nTITLE \"Мы идём\"\r\n"_s;
+  QStringEncoder utf16le_encoder(QStringConverter::Encoding::Utf16LE);
+  QStringEncoder utf16be_encoder(QStringConverter::Encoding::Utf16BE);
+  const QByteArray utf16le_data = utf16le_encoder.encode(utf16_text);
+  const QByteArray utf16be_data = utf16be_encoder.encode(utf16_text);
+  EXPECT_EQ(Utilities::TextFromData(utf16le_data), utf16_text);
+  EXPECT_EQ(Utilities::TextFromData(utf16be_data), utf16_text);
+
+}
+
+TEST(UtilitiesTest, ParseLRC) {
+
+  { // Empty input clears the lyrics
+    const std::optional<Utilities::LRCLines> lrc_lines = Utilities::ParseLRC(QString());
+    ASSERT_TRUE(lrc_lines.has_value());
+    ASSERT_TRUE(lrc_lines->isEmpty());
+  }
+
+  { // Metadata and blank lines are skipped, multiple timestamps are expanded and sorted, fraction widths
+    const std::optional<Utilities::LRCLines> lrc_lines = Utilities::ParseLRC(u"[ar:strawberry artist]\r\n[00:01.00]Line one\r\n\n[00:02.50][00:10.25]Chorus\n[00:03.123]Precise\n[00:04.5]Tenths\n[00:05]No fraction"_s);
+    ASSERT_TRUE(lrc_lines.has_value());
+    ASSERT_EQ(lrc_lines->count(), 6);
+    ASSERT_EQ(lrc_lines->at(0).time, 1000U);
+    ASSERT_EQ(lrc_lines->at(0).text, u"Line one"_s);
+    ASSERT_EQ(lrc_lines->at(1).time, 2500U);
+    ASSERT_EQ(lrc_lines->at(1).text, u"Chorus"_s);
+    ASSERT_EQ(lrc_lines->at(2).time, 3123U);
+    ASSERT_EQ(lrc_lines->at(3).time, 4500U);
+    ASSERT_EQ(lrc_lines->at(4).time, 5000U);
+    ASSERT_EQ(lrc_lines->at(5).time, 10250U);
+    ASSERT_EQ(lrc_lines->at(5).text, u"Chorus"_s);
+  }
+
+  { // Lines ending with only CR (classic Mac OS)
+    const std::optional<Utilities::LRCLines> lrc_lines = Utilities::ParseLRC(u"[00:01.00]Line one\r[00:02.00]Line two"_s);
+    ASSERT_TRUE(lrc_lines.has_value());
+    ASSERT_EQ(lrc_lines->count(), 2);
+    ASSERT_EQ(lrc_lines->at(0).text, u"Line one"_s);
+    ASSERT_EQ(lrc_lines->at(1).time, 2000U);
+  }
+
+  { // Offset, lines shifted before the start are clamped to zero
+    const std::optional<Utilities::LRCLines> lrc_lines = Utilities::ParseLRC(u"[offset:+500]\n[00:01.00]Line one\n[00:00.20]Line zero"_s);
+    ASSERT_TRUE(lrc_lines.has_value());
+    ASSERT_EQ(lrc_lines->count(), 2);
+    ASSERT_EQ(lrc_lines->at(0).time, 0U);
+    ASSERT_EQ(lrc_lines->at(1).time, 500U);
+  }
+
+  { // Invalid
+    ASSERT_FALSE(Utilities::ParseLRC(u"[00:01.00]Line one\nLine without timestamp"_s).has_value());
+    ASSERT_FALSE(Utilities::ParseLRC(u"Just plain lyrics"_s).has_value());
+    ASSERT_FALSE(Utilities::ParseLRC(u"[ar:strawberry artist]"_s).has_value());
+    ASSERT_FALSE(Utilities::ParseLRC(u"[00:75.00]Invalid seconds"_s).has_value());
+    ASSERT_FALSE(Utilities::ParseLRC(u"[99999999:00.00]Too large"_s).has_value());
+    ASSERT_FALSE(Utilities::ParseLRC(u"[offset:abc]\n[00:01.00]Invalid offset"_s).has_value());
+  }
+
+  { // Expansion of lines with many timestamps is limited
+    QString lrc;
+    for (int i = 0; i < 1000; ++i) lrc += u"[00:00.00]"_s;
+    lrc += QString(2000, u'x');
+    ASSERT_FALSE(Utilities::ParseLRC(lrc).has_value());
+  }
+
+}
+
+TEST(UtilitiesTest, LRCFilename) {
+
+  QTemporaryDir temp_dir;
+  ASSERT_TRUE(temp_dir.isValid());
+
+  const QString media_filename = temp_dir.filePath(u"strawberry.song.flac"_s);
+
+  // Without an existing LRC file, the name is the media filename with the extension replaced.
+  EXPECT_EQ(temp_dir.filePath(u"strawberry.song.lrc"_s), Utilities::LRCFilename(media_filename));
+
+  // LRC files for other media files are not used.
+  {
+    QFile other_file(temp_dir.filePath(u"strawberry.lrc"_s));
+    ASSERT_TRUE(other_file.open(QIODevice::WriteOnly));
+    other_file.close();
+  }
+  EXPECT_EQ(temp_dir.filePath(u"strawberry.song.lrc"_s), Utilities::LRCFilename(media_filename));
+
+  // An existing LRC file with the extension in any case is reused, so a second LRC file is not created next to it.
+  {
+    QFile lrc_file(temp_dir.filePath(u"strawberry.song.LrC"_s));
+    ASSERT_TRUE(lrc_file.open(QIODevice::WriteOnly));
+    lrc_file.close();
+  }
+  EXPECT_EQ(temp_dir.filePath(u"strawberry.song.LrC"_s), Utilities::LRCFilename(media_filename));
+
+}
+
+// Regression test: IDs from streaming servers must not be able to make the cover cache filename write outside the cache directory.
+TEST(UtilitiesTest, CoverFilenameFromId) {
+
+  // IDs used by the servers are kept, so existing cached covers are still found.
+  EXPECT_EQ(u"12345"_s, CoverUtils::FilenameFromId(u"12345"_s));
+  EXPECT_EQ(u"al-123"_s, CoverUtils::FilenameFromId(u"al-123"_s));
+  EXPECT_EQ(u"4uLU6hMCjMI75M1A2tKUQC"_s, CoverUtils::FilenameFromId(u"4uLU6hMCjMI75M1A2tKUQC"_s));
+  EXPECT_EQ(u"1280x1280.jpg"_s, CoverUtils::FilenameFromId(u"1280x1280.jpg"_s));
+  EXPECT_EQ(QString(), CoverUtils::FilenameFromId(QString()));
+  // Only the exact Windows device names are reserved, not names starting with them.
+  EXPECT_EQ(u"CONSOLE"_s, CoverUtils::FilenameFromId(u"CONSOLE"_s));
+  EXPECT_EQ(u"COM10"_s, CoverUtils::FilenameFromId(u"COM10"_s));
+  EXPECT_EQ(u"al-NUL"_s, CoverUtils::FilenameFromId(u"al-NUL"_s));
+  // IDs up to 64 characters are kept, longer IDs are hashed, so filenames combining several IDs can't exceed the filename length limit.
+  EXPECT_EQ(QString(64, u'a'), CoverUtils::FilenameFromId(QString(64, u'a')));
+  EXPECT_EQ(41, CoverUtils::FilenameFromId(QString(65, u'a')).length());
+  EXPECT_EQ(41, CoverUtils::FilenameFromId(QString(256, u'a')).length());
+
+  // Anything with path separators, a leading or trailing dot, a newline, or a Windows device name is replaced by a hash, which is the same for the same ID.
+  const QStringList unsafe_ids = QStringList() << u"../../../Pictures/x"_s << u".."_s << u".hidden"_s << u"a/b"_s << u"a\\b"_s << u"a b"_s << u"CON"_s << u"nul"_s << u"NUL.jpg"_s << u"com1"_s << u"LPT9.tar.gz"_s << u"abc."_s << u"abc\n"_s;
+  for (const QString &id : unsafe_ids) {
+    const QString filename = CoverUtils::FilenameFromId(id);
+    EXPECT_FALSE(filename.contains(u'/')) << id.toStdString();
+    EXPECT_FALSE(filename.contains(u'\\')) << id.toStdString();
+    EXPECT_FALSE(filename.startsWith(u'.')) << id.toStdString();
+    EXPECT_EQ(41, filename.length()) << id.toStdString();
+    EXPECT_TRUE(filename.startsWith(u'+')) << id.toStdString();
+    EXPECT_EQ(filename, CoverUtils::FilenameFromId(id));
+  }
+  EXPECT_NE(CoverUtils::FilenameFromId(u"a/b"_s), CoverUtils::FilenameFromId(u"a\\b"_s));
+
+  // A hash can't be the same as an ID that is used as it is, even when the server uses the hash as an ID.
+  const QString hashed_filename = CoverUtils::FilenameFromId(u"a/b"_s);
+  const QString hash_as_id = hashed_filename.mid(1);
+  EXPECT_EQ(hash_as_id, CoverUtils::FilenameFromId(hash_as_id));
+  EXPECT_NE(hashed_filename, CoverUtils::FilenameFromId(hash_as_id));
+  EXPECT_NE(hashed_filename, CoverUtils::FilenameFromId(hashed_filename));
+
+  const QString subsonic_filename = CoverUtils::CoverFilenameFromSource(Song::Source::Subsonic, QUrl(), u"Artist"_s, u"Album"_s, u"../../x"_s, u"jpg"_s);
+  EXPECT_FALSE(subsonic_filename.contains(u'/'));
+  EXPECT_TRUE(subsonic_filename.endsWith(u".jpg"_s));
+
+  EXPECT_EQ(u"12345-1280x1280.jpg"_s, CoverUtils::CoverFilenameFromSource(Song::Source::Tidal, QUrl(u"https://resources.tidal.com/images/a/b/c/1280x1280.jpg"_s), u"Artist"_s, u"Album"_s, u"12345"_s, QString()));
+  const QString tidal_filename = CoverUtils::CoverFilenameFromSource(Song::Source::Tidal, QUrl(u"https://example.com/images/..%5C..%5Cx"_s), u"Artist"_s, u"Album"_s, u"12345"_s, u"jpg"_s);
+  EXPECT_FALSE(tidal_filename.contains(u'\\'));
+  EXPECT_FALSE(tidal_filename.contains(u'/'));
+
+  const QString long_id(256, u'a');
+  const QString jellyfin_filename = CoverUtils::CoverFilenameFromSource(Song::Source::Jellyfin, QUrl(u"https://example.com/Items/"_s + long_id + u"/Images/"_s + long_id + u"?tag="_s + long_id), u"Artist"_s, u"Album"_s, long_id, u"jpg"_s);
+  EXPECT_LT(jellyfin_filename.length(), 255);
+
+}
+
+#ifndef Q_OS_WIN32
+// Regression test: removing a directory followed the links to directories in it, so the files in the directories they link to were removed too.
+TEST(UtilitiesTest, RemoveRecursiveDoesNotFollowLinks) {
+
+  QTemporaryDir temp_dir;
+  ASSERT_TRUE(temp_dir.isValid());
+  const QDir root(temp_dir.path());
+
+  // A directory outside the directory being removed, which a link points to.
+  ASSERT_TRUE(root.mkpath(u"outside/subdir"_s));
+  const QString outside_file = root.filePath(u"outside/file.txt"_s);
+  const QString outside_subdir_file = root.filePath(u"outside/subdir/file.txt"_s);
+  for (const QString &filename : {outside_file, outside_subdir_file}) {
+    QFile file(filename);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("data");
+  }
+
+  // The directory being removed, with a file, a subdirectory, a link to the outside directory and a broken link.
+  ASSERT_TRUE(root.mkpath(u"remove/subdir"_s));
+  {
+    QFile file(root.filePath(u"remove/subdir/file.txt"_s));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("data");
+  }
+  ASSERT_TRUE(QFile::link(root.filePath(u"outside"_s), root.filePath(u"remove/link"_s)));
+  ASSERT_TRUE(QFile::link(root.filePath(u"missing"_s), root.filePath(u"remove/broken_link"_s)));
+
+  EXPECT_TRUE(Utilities::RemoveRecursive(root.filePath(u"remove"_s)));
+  EXPECT_FALSE(QFileInfo::exists(root.filePath(u"remove"_s)));
+  EXPECT_TRUE(QFile::exists(outside_file));
+  EXPECT_TRUE(QFile::exists(outside_subdir_file));
+
+  // Removing a link to a directory only removes the link.
+  ASSERT_TRUE(QFile::link(root.filePath(u"outside"_s), root.filePath(u"link"_s)));
+  EXPECT_TRUE(Utilities::RemoveRecursive(root.filePath(u"link"_s)));
+  EXPECT_FALSE(QFileInfo(root.filePath(u"link"_s)).isSymLink());
+  EXPECT_TRUE(QFile::exists(outside_file));
+  EXPECT_TRUE(QFile::exists(outside_subdir_file));
+
+}
+#endif

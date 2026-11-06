@@ -1,6 +1,7 @@
 /*
  * Strawberry Music Player
  * Copyright 2026, Strawberry contributors
+ * Copyright 2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -34,13 +35,16 @@
 #include <QString>
 #include <QUrl>
 
+#include "includes/shared_ptr.h"
 #include "core/logging.h"
 #include "core/signalchecker.h"
+#include "engine/gstpadutils.h"
 #include "utilities/threadutils.h"
 #include "waveform/waveformbuilder.h"
 
 using namespace Qt::Literals::StringLiterals;
 using std::make_unique;
+using std::make_shared;
 
 WaveformPipeline::WaveformPipeline(const QUrl &url, QObject *parent)
     : QObject(parent),
@@ -48,7 +52,30 @@ WaveformPipeline::WaveformPipeline(const QUrl &url, QObject *parent)
       pipeline_(nullptr),
       convert_element_(nullptr),
       success_(false),
-      running_(false) {}
+      running_(false),
+      error_received_(false),
+      finished_(false) {}
+
+void WaveformPipeline::NotifyFinished(QObject *context, const std::function<void()> &callback) {
+
+  // The callback is only called once, it can be called both by the signal and below when the pipeline finished while connecting.
+  SharedPtr<bool> called = make_shared<bool>(false);
+  SharedPtr<QMetaObject::Connection> connection = make_shared<QMetaObject::Connection>();
+  const auto call_once = [called, connection, callback]() {
+    if (*called) return;
+    *called = true;
+    QObject::disconnect(*connection);
+    callback();
+  };
+
+  *connection = QObject::connect(this, &WaveformPipeline::Finished, context, call_once);
+
+  // The finished flag is set before the signal is emitted, so when it is not set here, the signal is emitted after connecting.
+  if (finished_.load()) {
+    QMetaObject::invokeMethod(context, call_once, Qt::QueuedConnection);
+  }
+
+}
 
 WaveformPipeline::~WaveformPipeline() {
 
@@ -103,6 +130,7 @@ void WaveformPipeline::Start() {
   if (!decodebin || !convert_element || !resample || !appsink) {
     gst_object_unref(GST_OBJECT(pipeline_));
     pipeline_ = nullptr;
+    finished_ = true;
     Q_EMIT Finished(false);
     return;
   }
@@ -112,6 +140,7 @@ void WaveformPipeline::Start() {
     qLog(Error) << "Failed to link audioconvert to audioresample";
     gst_object_unref(GST_OBJECT(pipeline_));
     pipeline_ = nullptr;
+    finished_ = true;
     Q_EMIT Finished(false);
     return;
   }
@@ -124,6 +153,7 @@ void WaveformPipeline::Start() {
     qLog(Error) << "Failed to link audioresample to appsink with filter";
     gst_object_unref(GST_OBJECT(pipeline_));
     pipeline_ = nullptr;
+    finished_ = true;
     Q_EMIT Finished(false);
     return;
   }
@@ -185,6 +215,9 @@ void WaveformPipeline::NewPadCallback(GstElement *element, GstPad *pad, gpointer
     return;
   }
 
+  // Only link the audio, not pads for video or subtitles, which would otherwise replace the audio pad.
+  if (!GstPadIsAudio(pad)) return;
+
   GstPad *const audiopad = gst_element_get_static_pad(instance->convert_element_, "sink");
   if (!audiopad) return;
 
@@ -232,6 +265,11 @@ GstBusSyncReply WaveformPipeline::BusCallbackSync(GstBus *bus, GstMessage *messa
 
   WaveformPipeline *instance = reinterpret_cast<WaveformPipeline*>(self);
 
+  // Errors are remembered before checking if the pipeline is running, the end of the stream can stop the pipeline in another thread just before the error arrives.
+  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+    instance->error_received_ = true;
+  }
+
   if (!instance->running_) return GST_BUS_PASS;
 
   switch (GST_MESSAGE_TYPE(message)) {
@@ -254,7 +292,8 @@ GstBusSyncReply WaveformPipeline::BusCallbackSync(GstBus *bus, GstMessage *messa
 
 void WaveformPipeline::Stop(const bool success) {
 
-  running_ = false;
+  // The end of the stream and errors can arrive in different streaming threads, only the first one that stops the pipeline finishes it.
+  if (!running_.exchange(false)) return;
 
   QMetaObject::invokeMethod(this, "Finish", Qt::QueuedConnection, Q_ARG(bool, success));
 
@@ -269,7 +308,8 @@ void WaveformPipeline::Finish(const bool success) {
   // Setting it to GST_STATE_NULL joins the GStreamer streaming threads, so NewBufferCallback can no longer be running and the builder_.reset() below cannot race with it.
   Cleanup();
 
-  success_ = success;
+  // After joining the streaming threads, so an error that arrived while the end of the stream finished the pipeline is not missed.
+  success_ = success && !error_received_;
 
   if (builder_) {
     data_ = builder_->Finish(WaveformBuilder::kWaveformBaseCount);
@@ -281,6 +321,7 @@ void WaveformPipeline::Finish(const bool success) {
     data_.clear();
   }
 
+  finished_ = true;
   Q_EMIT Finished(success_);
 
 }

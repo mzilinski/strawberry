@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ Nếu không có kết quả trùng khớp thì nó sẽ sử dụng hình ảnh
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Bộ sưu tập của bạn trống rỗng!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Nhấn vào đây để thêm nhạc</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Thêm vào danh sách phát hiện tại</translation>
@@ -1393,6 +1385,17 @@ Nếu không có kết quả trùng khớp thì nó sẽ sử dụng hình ảnh
     <message>
       <source>Search for this</source>
       <translation>Tìm kiếm cái này</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Bộ sưu tập của bạn trống rỗng!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Nhấn vào đây để thêm nhạc</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ Nếu không có kết quả trùng khớp thì nó sẽ sử dụng hình ảnh
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Tự động hoàn thành lời bài hát</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Lời bài hát</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(khác nhau giữa các bài hát)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Lời bài hát</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Trước</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Tiếp</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Đang lưu bản nhạc</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Không thể ghi metadata vào %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Không thể ghi metadata vào %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Đang tải bản nhạc</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>đang tải...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Không tìm thấy.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Sửa thông tin bài hát</translation>
@@ -7065,26 +7122,6 @@ Bạn có chắc chắn muốn tiếp tục không?</translation>
       <translation>Nhấp vào đây để lấy nhạc</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Thêm vào danh sách phát hiện tại</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Thay thế danh sách phát hiện tại</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Mở trong danh sách phát mới</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Thêm vào hàng đợi</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Xếp phát tiếp theo</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Xóa khỏi yêu thích</translation>
     </message>
@@ -7106,6 +7143,40 @@ Bạn có chắc chắn muốn tiếp tục không?</translation>
     <message>
       <source>Refresh catalogue</source>
       <translation>Làm mới danh mục</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Khung thẻ phát trực tuyến</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Nghệ sĩ</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Album</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Bài hát</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Tìm kiếm</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Cấu hình %1...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Cấu hình %1...</translation>
     </message>
   </context>
   <context>
@@ -7180,40 +7251,6 @@ Bạn có chắc chắn muốn tiếp tục không?</translation>
     <message>
       <source>Group by</source>
       <translation>Nhóm theo</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Cấu hình %1...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Khung thẻ phát trực tuyến</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Nghệ sĩ</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Album</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Bài hát</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Tìm kiếm</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Cấu hình %1...</translation>
     </message>
   </context>
   <context>

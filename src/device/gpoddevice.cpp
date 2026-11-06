@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 
 #include "config.h"
 
+#include <utility>
 #include <memory>
 
 #include <glib.h>
@@ -33,7 +34,9 @@
 #include <QDir>
 #include <QFile>
 #include <QList>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QImage>
 
@@ -79,9 +82,10 @@ bool GPodDevice::Init() {
   InitBackendDirectory(url_.path(), first_time_);
   collection_model_->Init();
 
-  loader_ = new GPodLoader(url_.path(), task_manager_, collection_backend_, shared_from_this());
+  // The loader doesn't hold the device, that made a reference cycle, which kept the device alive when it was never connected.
+  loader_ = new GPodLoader(url_.path(), task_manager_, collection_backend_);
+  // The loader is only moved to its thread when connecting, so a loader that was never started still lives in this thread, and can be deleted here.
   loader_thread_ = new QThread();
-  loader_->moveToThread(loader_thread_);
 
   QObject::connect(loader_, &GPodLoader::Error, this, &GPodDevice::LoaderError);
   QObject::connect(loader_, &GPodLoader::TaskStarted, this, &GPodDevice::TaskStarted);
@@ -95,10 +99,15 @@ bool GPodDevice::Init() {
 GPodDevice::~GPodDevice() {
 
   if (loader_) {
-    loader_thread_->exit();
-    loader_->deleteLater();
-    loader_thread_->deleteLater();
+    // The loader can still be loading, abort it and wait for the thread to finish, deleting a running QThread crashes.
+    loader_->Abort();
+    loader_thread_->quit();
+    loader_thread_->wait();
+    // The loader is back in this thread, it was either never moved to the loader thread, or LoadDatabase() moved it back before the thread finished.
+    // Deleting it also frees the database if LoadFinished() was not handled yet.
+    delete loader_;
     loader_ = nullptr;
+    delete loader_thread_;
     loader_thread_ = nullptr;
   }
 
@@ -111,6 +120,10 @@ GPodDevice::~GPodDevice() {
 
 void GPodDevice::ConnectAsync() {
 
+  // Already loading or loaded.
+  if (!loader_ || !loader_thread_ || loader_thread_->isRunning()) return;
+
+  loader_->moveToThread(loader_thread_);
   loader_thread_->start();
 
 }
@@ -128,15 +141,16 @@ void GPodDevice::Close() {
 
 }
 
-void GPodDevice::LoadFinished(Itdb_iTunesDB *db, const bool success) {
+void GPodDevice::LoadFinished(const bool success) {
 
   QMutexLocker l(&db_mutex_);
-  db_ = db;
+  db_ = loader_->TakeDatabase();
   db_wait_cond_.wakeAll();
 
   if (loader_thread_) {
+    // The loading is done, so the thread finishes right away, wait for it without a timeout, deleting a running QThread crashes.
     loader_thread_->quit();
-    loader_thread_->wait(1000);
+    loader_thread_->wait();
     loader_thread_->deleteLater();
     loader_thread_ = nullptr;
   }
@@ -262,8 +276,8 @@ bool GPodDevice::CopyToStorage(const CopyJob &job, QString &error_text) {
     qLog(Error) << error_text;
     Q_EMIT Error(error_text);
 
-    // Need to remove the track from the db again
-    itdb_track_remove(track);
+    // Need to remove the track from the db again, and from the master playlist it was added to.
+    RemoveTrackFromITunesDb(track);
     return false;
   }
 
@@ -283,9 +297,9 @@ bool GPodDevice::CopyToStorage(const CopyJob &job, QString &error_text) {
 
   AddTrackToModel(track, url_.path());
 
-  // Remove the original if it was requested
+  // Remove the original if it was requested, but only when the database is written, otherwise the track is not on the device.
   if (job.remove_original_) {
-    QFile::remove(job.source_);
+    files_to_remove_.insert(job.original());
   }
 
   return true;
@@ -326,6 +340,7 @@ void GPodDevice::Finish(const bool success) {
 
   songs_to_add_.clear();
   songs_to_remove_.clear();
+  files_to_remove_.clear();
   cover_files_.clear();
 
   db_busy_.unlock();
@@ -334,15 +349,34 @@ void GPodDevice::Finish(const bool success) {
 
 bool GPodDevice::FinishCopy(bool success, QString &error_text) {
 
-  if (success) success = WriteDatabase(error_text);
-  Finish(success);
-  return ConnectedDevice::FinishCopy(success, error_text);
+  // Write the database when any track was copied, also when copying others failed, otherwise the copied tracks are on the device, but not in the database.
+  const bool database_written = songs_to_add_.isEmpty() || WriteDatabase(error_text);
+
+  // Only remove the originals of moved files when the tracks are in the database.
+  // A failed removal fails the move, since the file is left in both places.
+  QStringList remove_errors;
+  if (database_written) {
+    for (const QString &filename : std::as_const(files_to_remove_)) {
+      if (!QFile::remove(filename)) {
+        const QString remove_error = tr("Could not remove original file %1").arg(filename);
+        qLog(Error) << remove_error;
+        remove_errors << remove_error;
+      }
+    }
+  }
+  if (!remove_errors.isEmpty()) {
+    error_text = remove_errors.join(u'\n');
+  }
+
+  Finish(database_written);
+
+  return ConnectedDevice::FinishCopy(success && database_written && remove_errors.isEmpty(), error_text);
 
 }
 
 void GPodDevice::StartDelete() { Start(); }
 
-bool GPodDevice::RemoveTrackFromITunesDb(const QString &path, const QString &relative_to) {
+Itdb_Track *GPodDevice::FindTrackInITunesDb(const QString &path, const QString &relative_to) const {
 
   QString ipod_filename = path;
   if (!relative_to.isEmpty() && path.startsWith(relative_to)) {
@@ -352,26 +386,25 @@ bool GPodDevice::RemoveTrackFromITunesDb(const QString &path, const QString &rel
   ipod_filename.replace(u'/', u':');
 
   // Find the track in the itdb, identify it by its filename
-  Itdb_Track *track = nullptr;
   for (GList *tracks = db_->tracks; tracks != nullptr; tracks = tracks->next) {
-    Itdb_Track *t = static_cast<Itdb_Track*>(tracks->data);
-
-    if (QString::fromUtf8(t->ipod_path) == ipod_filename) {
-      track = t;
-      break;
+    Itdb_Track *track = static_cast<Itdb_Track*>(tracks->data);
+    if (QString::fromUtf8(track->ipod_path) == ipod_filename) {
+      return track;
     }
   }
 
-  if (track == nullptr) {
-    qLog(Warning) << "Couldn't find song" << path << "in iTunesDB";
-    return false;
-  }
+  return nullptr;
 
-  // Remove the track from all playlists
+}
+
+void GPodDevice::RemoveTrackFromITunesDb(Itdb_Track *track) {
+
+  // Remove the track from all playlists first, since itdb_track_remove() only removes it from the track list, so the playlists would keep a pointer to the freed track.
   for (GList *playlists = db_->playlists; playlists != nullptr; playlists = playlists->next) {
     Itdb_Playlist *playlist = static_cast<Itdb_Playlist*>(playlists->data);
 
-    if (itdb_playlist_contains_track(playlist, track)) {
+    // itdb_playlist_remove_track() only removes the first occurrence, and a playlist can contain the same track more than once.
+    while (itdb_playlist_contains_track(playlist, track)) {
       itdb_playlist_remove_track(playlist, track);
     }
   }
@@ -379,22 +412,28 @@ bool GPodDevice::RemoveTrackFromITunesDb(const QString &path, const QString &rel
   // Remove the track from the database, this frees the struct too
   itdb_track_remove(track);
 
-  return true;
-
 }
 
 bool GPodDevice::DeleteFromStorage(const DeleteJob &job) {
 
   Q_ASSERT(db_);
 
-  if (!RemoveTrackFromITunesDb(job.metadata_.url().toLocalFile(), url_.path())) {
+  const QString filename = job.metadata_.url().toLocalFile();
+
+  Itdb_Track *track = FindTrackInITunesDb(filename, url_.path());
+  if (!track) {
+    qLog(Warning) << "Couldn't find song" << filename << "in iTunesDB";
     return false;
   }
 
-  // Remove the file
-  if (!QFile::remove(job.metadata_.url().toLocalFile())) {
+  // Remove the file before the track, so the track stays in the database when removing the file fails, since the database is written when other files were removed.
+  // A file that is already missing is removed from the database too, otherwise the track can never be removed.
+  if (QFile::exists(filename) && !QFile::remove(filename)) {
+    qLog(Error) << "Failed to remove" << filename;
     return false;
   }
+
+  RemoveTrackFromITunesDb(track);
 
   // Remove it from our collection model
   songs_to_remove_ << job.metadata_;
@@ -405,9 +444,12 @@ bool GPodDevice::DeleteFromStorage(const DeleteJob &job) {
 
 bool GPodDevice::FinishDelete(bool success, QString &error_text) {
 
-  if (success) success = WriteDatabase(error_text);
-  Finish(success);
-  return ConnectedDevice::FinishDelete(success, error_text);
+  // Write the database when any file was deleted, also when deleting others failed, otherwise the database still has the deleted files.
+  const bool database_written = songs_to_remove_.isEmpty() || WriteDatabase(error_text);
+
+  Finish(database_written);
+
+  return ConnectedDevice::FinishDelete(success && database_written, error_text);
 
 }
 

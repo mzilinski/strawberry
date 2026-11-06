@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2022-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2022-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,17 +23,20 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QList>
 #include <QUrl>
 #include <QImage>
 #include <QImageReader>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QSslError>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QTimer>
 #include <QScopeGuard>
 
+#include "includes/shared_ptr.h"
 #include "constants/timeconstants.h"
 #include "utilities/imageutils.h"
 #include "utilities/coverutils.h"
@@ -789,10 +792,15 @@ void SpotifyRequest::AlbumsReceived(QNetworkReply *reply, const Artist &artist_a
           if (song.is_compilation()) compilation = true;
           songs << song;
         }
+        SongMap available_songs;
         for (Song song : std::as_const(songs)) {
           if (compilation) song.set_compilation_detected(true);
           if (!multidisc) song.set_disc(0);
           songs_.insert(song.song_id(), song);
+          available_songs.insert(song.song_id(), song);
+        }
+        if (!available_songs.isEmpty()) {
+          Q_EMIT SongsAvailable(query_id_, available_songs);
         }
       }
     }
@@ -1006,10 +1014,15 @@ void SpotifyRequest::SongsReceived(QNetworkReply *reply, const Artist &artist, c
     songs << song;
   }
 
+  SongMap available_songs;
   for (Song song : std::as_const(songs)) {
     if (compilation) song.set_compilation_detected(true);
     if (!multidisc) song.set_disc(0);
     songs_.insert(song.song_id(), song);
+    available_songs.insert(song.song_id(), song);
+  }
+  if (!available_songs.isEmpty()) {
+    Q_EMIT SongsAvailable(query_id_, available_songs);
   }
 
   if (type_ == Type::FavouriteSongs || type_ == Type::SearchSongs) {
@@ -1242,6 +1255,13 @@ void SpotifyRequest::FlushAlbumCoverRequests() {
   while (!album_cover_requests_queue_.isEmpty() && album_covers_requests_active_ < kMaxConcurrentAlbumCoverRequests) {
     const AlbumCoverRequest request = album_cover_requests_queue_.dequeue();
     QNetworkReply *reply = CreateGetRequest(request.url);
+    // Certificate errors for album covers are only warnings, they don't mean that songs are missing.
+    QObject::disconnect(reply, &QNetworkReply::sslErrors, this, &HttpBaseRequest::HandleSSLErrors);
+    QObject::connect(reply, &QNetworkReply::sslErrors, this, [this](const QList<QSslError> &ssl_errors) {
+      for (const QSslError &ssl_error : ssl_errors) {
+        Warn(ssl_error.errorString());
+      }
+    });
     QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, request]() { AlbumCoverReceived(reply, request.album_id, request.url, request.filename); });
     ++album_covers_requests_active_;
   }
@@ -1274,13 +1294,13 @@ void SpotifyRequest::AlbumCoverReceived(QNetworkReply *reply, const QString &alb
   }
 
   if (reply->error() != QNetworkReply::NoError) {
-    Error(QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+    Warn(QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error())));
     album_covers_requests_sent_.remove(album_id);
     return;
   }
 
   if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
-    Error(QStringLiteral("Received HTTP code %1 for %2.").arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()).arg(url.toString()));
+    Warn(QStringLiteral("Received HTTP code %1 for %2.").arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()).arg(url.toString()));
     if (album_covers_requests_sent_.contains(album_id)) album_covers_requests_sent_.remove(album_id);
     return;
   }
@@ -1290,14 +1310,14 @@ void SpotifyRequest::AlbumCoverReceived(QNetworkReply *reply, const QString &alb
     mimetype = mimetype.left(mimetype.indexOf(u';'));
   }
   if (!ImageUtils::SupportedImageMimeTypes().contains(mimetype, Qt::CaseInsensitive) && !ImageUtils::SupportedImageFormats().contains(mimetype, Qt::CaseInsensitive)) {
-    Error(QStringLiteral("Unsupported mimetype for image reader %1 for %2").arg(mimetype, url.toString()));
+    Warn(QStringLiteral("Unsupported mimetype for image reader %1 for %2").arg(mimetype, url.toString()));
     if (album_covers_requests_sent_.contains(album_id)) album_covers_requests_sent_.remove(album_id);
     return;
   }
 
   QByteArray data = reply->readAll();
   if (data.isEmpty()) {
-    Error(QStringLiteral("Received empty image data for %1").arg(url.toString()));
+    Warn(QStringLiteral("Received empty image data for %1").arg(url.toString()));
     if (album_covers_requests_sent_.contains(album_id)) album_covers_requests_sent_.remove(album_id);
     return;
   }
@@ -1319,13 +1339,13 @@ void SpotifyRequest::AlbumCoverReceived(QNetworkReply *reply, const QString &alb
       }
     }
     else {
-      Error(QStringLiteral("Error saving image data to %1").arg(filename));
+      Warn(QStringLiteral("Error saving image data to %1").arg(filename));
       if (album_covers_requests_sent_.contains(album_id)) album_covers_requests_sent_.remove(album_id);
     }
   }
   else {
     if (album_covers_requests_sent_.contains(album_id)) album_covers_requests_sent_.remove(album_id);
-    Error(QStringLiteral("Error decoding image data from %1").arg(url.toString()));
+    Warn(QStringLiteral("Error decoding image data from %1").arg(url.toString()));
   }
 
 }
@@ -1398,7 +1418,7 @@ void SpotifyRequest::Error(const QString &error_message, const QVariant &debug_o
 
 void SpotifyRequest::Warn(const QString &error_message, const QVariant &debug) {
 
-  qLog(Error) << "Spotify:" << error_message;
+  qLog(Warning) << "Spotify:" << error_message;
   if (debug.isValid()) qLog(Debug) << debug;
 
 }

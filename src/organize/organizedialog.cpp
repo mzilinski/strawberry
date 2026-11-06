@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -34,7 +34,6 @@
 #include <QAbstractItemModel>
 #include <QDialog>
 #include <QScreen>
-#include <QHash>
 #include <QMap>
 #include <QDir>
 #include <QFileInfo>
@@ -66,6 +65,7 @@
 #include "widgets/linetextedit.h"
 #include "tagreader/tagreaderclient.h"
 #include "collection/collectionbackend.h"
+#include "collection/collectiondirectorymodel.h"
 #include "organize.h"
 #include "organizeformat.h"
 #include "organizesyntaxhighlighter.h"
@@ -104,6 +104,9 @@ OrganizeDialog::OrganizeDialog(const SharedPtr<TaskManager> task_manager,
       task_manager_(task_manager),
       tagreader_client_(tagreader_client),
       collection_backend_(collection_backend),
+      stop_loading_songs_(false),
+      songs_generation_(0),
+      loading_songs_(false),
       total_size_(0),
       devices_(false) {
 
@@ -170,7 +173,21 @@ OrganizeDialog::OrganizeDialog(const SharedPtr<TaskManager> task_manager,
 }
 
 OrganizeDialog::~OrganizeDialog() {
+
+  stop_loading_songs_ = true;
+  for (QFuture<SongList> &future : songs_futures_) {
+    future.waitForFinished();
+  }
   delete ui_;
+
+}
+
+void OrganizeDialog::SetCollectionDirectoryModel(CollectionDirectoryModel *collection_directory_model) {
+  collection_directory_model_ = collection_directory_model;
+}
+
+void OrganizeDialog::SetSourceRoots(const QStringList &source_roots) {
+  source_roots_ = source_roots;
 }
 
 void OrganizeDialog::SetDestinationModel(QAbstractItemModel *model, const bool devices) {
@@ -209,9 +226,15 @@ void OrganizeDialog::accept() {
 
   if (!storage) return;
 
+  // Empty directories left by moving songs are only removed inside the collection directories, the source roots and the destination.
+  QStringList original_roots = source_roots_;
+  if (collection_directory_model_) {
+    original_roots << collection_directory_model_->paths();
+  }
+
   // It deletes itself when it's finished.
   const bool copy = ui_->aftercopying->currentIndex() == 0;
-  Organize *organize = new Organize(task_manager_, tagreader_client_, storage, format_, copy, ui_->overwrite->isChecked(), ui_->albumcover->isChecked(), new_songs_info_, ui_->eject_after->isChecked(), playlist_);
+  Organize *organize = new Organize(task_manager_, tagreader_client_, storage, format_, copy, ui_->overwrite->isChecked(), ui_->albumcover->isChecked(), new_songs_info_, original_roots, ui_->eject_after->isChecked(), playlist_);
   QObject::connect(organize, &Organize::Finished, this, &OrganizeDialog::OrganizeFinished);
   QObject::connect(organize, &Organize::FileCopied, this, &OrganizeDialog::FileCopied);
   if (collection_backend_) {
@@ -352,6 +375,8 @@ void OrganizeDialog::SaveSettings() {
 
 bool OrganizeDialog::SetSongs(const SongList &songs) {
 
+  ++songs_generation_;
+  loading_songs_ = false;
   total_size_ = 0;
   songs_.clear();
 
@@ -368,11 +393,6 @@ bool OrganizeDialog::SetSongs(const SongList &songs) {
   ui_->free_space->set_additional_bytes(total_size_);
   UpdatePreviews();
   SetLoadingSongs(false);
-
-  if (songs_future_.isRunning()) {
-    songs_future_.cancel();
-  }
-  songs_future_ = QFuture<SongList>();
 
   return !songs_.isEmpty();
 
@@ -393,13 +413,18 @@ bool OrganizeDialog::SetUrls(const QList<QUrl> &urls) {
 
 bool OrganizeDialog::SetFilenames(const QStringList &filenames) {
 
-  songs_future_ = QtConcurrent::run(&OrganizeDialog::LoadSongsBlocking, this, filenames);
+  const QFuture<SongList> future = QtConcurrent::run(&OrganizeDialog::LoadSongsBlocking, this, filenames);
+  songs_futures_ << future;
+  const quint64 songs_generation = ++songs_generation_;
   QFutureWatcher<SongList> *watcher = new QFutureWatcher<SongList>(this);
-  QObject::connect(watcher, &QFutureWatcher<SongList>::finished, this, [this, watcher]() {
-    SetSongs(watcher->result());
+  QObject::connect(watcher, &QFutureWatcher<SongList>::finished, this, [this, watcher, songs_generation]() {
     watcher->deleteLater();
+    songs_futures_.removeIf([](const QFuture<SongList> &songs_future) { return songs_future.isFinished(); });
+    // Other songs were set while loading these.
+    if (songs_generation != songs_generation_) return;
+    SetSongs(watcher->result());
   });
-  watcher->setFuture(songs_future_);
+  watcher->setFuture(future);
 
   SetLoadingSongs(true);
   return true;
@@ -407,6 +432,8 @@ bool OrganizeDialog::SetFilenames(const QStringList &filenames) {
 }
 
 void OrganizeDialog::SetLoadingSongs(const bool loading) {
+
+  loading_songs_ = loading;
 
   if (loading) {
     ui_->preview_stack->setCurrentWidget(ui_->loading_page);
@@ -424,7 +451,8 @@ SongList OrganizeDialog::LoadSongsBlocking(const QStringList &filenames) const {
   SongList songs;
 
   QStringList filenames_copy = filenames;
-  while (!filenames_copy.isEmpty()) {
+  // The dialog is deleted, for example when quitting, so don't read the remaining files.
+  while (!filenames_copy.isEmpty() && !stop_loading_songs_) {
     const QString filename = filenames_copy.takeFirst();
 
     // If it's a directory, add all the files inside.
@@ -463,12 +491,13 @@ void OrganizeDialog::InsertTag(const QString &tag) {
   ui_->naming->insertPlainText(QLatin1Char('%') + tag);
 }
 
-Organize::NewSongInfoList OrganizeDialog::ComputeNewSongsFilenames(const SongList &songs, const OrganizeFormat &format, const QString &extension) {
+Organize::NewSongInfoList OrganizeDialog::ComputeNewSongsFilenames(const SongList &songs, const OrganizeFormat &format, const QString &extension, const QString &root) {
 
   // Check if we will have multiple files with the same name.
   // If so, they will erase each other if the overwrite flag is set.
   // Better to rename them: e.g. foo.bar -> foo(2).bar
-  QHash<QString, int> filenames;
+  // Organize checks again when copying, since transcoding can change the extensions.
+  Organize::UniqueFilenames unique_filenames(root, songs);
   Organize::NewSongInfoList new_songs_info;
   new_songs_info.reserve(songs.count());
   for (const Song &song : songs) {
@@ -477,13 +506,7 @@ Organize::NewSongInfoList OrganizeDialog::ComputeNewSongsFilenames(const SongLis
       return Organize::NewSongInfoList();
     }
     if (result.unique_filename) {
-      if (filenames.contains(result.filename)) {
-        QString song_number = QString::number(++filenames[result.filename]);
-        result.filename = Utilities::PathWithoutFilenameExtension(result.filename) + u"("_s + song_number + u")."_s + QFileInfo(result.filename).suffix();
-      }
-      else {
-        filenames.insert(result.filename, 1);
-      }
+      result.filename = unique_filenames.Make(result.filename, song.url().toLocalFile());
     }
     new_songs_info << Organize::NewSongInfo(song, result.filename, result.unique_filename);
   }
@@ -494,7 +517,7 @@ Organize::NewSongInfoList OrganizeDialog::ComputeNewSongsFilenames(const SongLis
 
 void OrganizeDialog::UpdatePreviews() {
 
-  if (songs_future_.isRunning()) {
+  if (loading_songs_) {
     return;
   }
 
@@ -543,7 +566,7 @@ void OrganizeDialog::UpdatePreviews() {
       TranscoderPreset preset = Transcoder::PresetForFileType(format);
       extension = preset.extension_;
     }
-    new_songs_info_ = ComputeNewSongsFilenames(songs_, format_, extension);
+    new_songs_info_ = ComputeNewSongsFilenames(songs_, format_, extension, storage ? storage->LocalPath() : QString());
     if (new_songs_info_.isEmpty()) {
       ok = false;
     }
@@ -575,9 +598,10 @@ void OrganizeDialog::UpdatePreviews() {
 
 }
 
-void OrganizeDialog::OrganizeFinished(const QStringList &files_with_errors, const QStringList &log) {
+void OrganizeDialog::OrganizeFinished(const QStringList &files_with_errors, const QStringList &log, const bool success) {
 
-  if (files_with_errors.isEmpty()) return;
+  // Finishing can fail when all files were copied, for example when writing the device database or removing the originals fails, the error is in the log.
+  if (success && files_with_errors.isEmpty()) return;
 
   error_dialog_ = make_unique<OrganizeErrorDialog>();
   error_dialog_->Show(OrganizeErrorDialog::OperationType::Copy, files_with_errors, log);

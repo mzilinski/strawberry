@@ -56,6 +56,8 @@ class TagReaderClient : public QObject {
   explicit TagReaderClient(QObject *parent = nullptr);
 
   void Start();
+  // Stops processing the requests reading files when the application starts exiting, the requests writing to files are still processed until the tagreader exits.
+  void AbortReads();
   void ExitAsync();
 
   using SaveOption = SaveTagsOption;
@@ -89,12 +91,19 @@ class TagReaderClient : public QObject {
   [[nodiscard]] TagReaderReplyPtr SaveSongRatingAsync(const QString &filename, const float rating);
   TagReaderResult SaveSongRatingBlocking(const QString &filename, const float rating);
 
+  [[nodiscard]] TagReaderReplyPtr SaveSongLyricsAsync(const QString &filename, const QString &lyrics);
+  TagReaderResult SaveSongLyricsBlocking(const QString &filename, const QString &lyrics);
+
+  [[nodiscard]] TagReaderReplyPtr SaveSongSyncedLyricsAsync(const QString &filename, const QString &synced_lyrics);
+  TagReaderResult SaveSongSyncedLyricsBlocking(const QString &filename, const QString &synced_lyrics);
+
  private:
   bool HaveRequests() const;
   void EnqueueRequest(TagReaderRequestPtr request);
   TagReaderRequestPtr DequeueRequest();
   void ProcessRequestsAsync();
   void ProcessRequest(TagReaderRequestPtr request);
+  static bool IsWriteRequest(TagReaderRequestPtr request);
 
  Q_SIGNALS:
   void ExitFinished();
@@ -111,9 +120,14 @@ class TagReaderClient : public QObject {
   QThread *original_thread_;
   QQueue<TagReaderRequestPtr> requests_;
   mutable QMutex mutex_requests_;
+  // Held while writing tags, the blocking functions are also called from other threads than the queued requests, and two writes to the same file at once can corrupt it.
+  QMutex mutex_write_;
   TagReaderTagLib tagreader_;
   TagReaderGME gmereader_;
+  // Set when exiting, the requests reading files are dropped, but the requests writing to files are still processed, so changes to the tags are not lost.
   std::atomic<bool> abort_;
+  // Set when the tagreader exited and moved back to the original thread.
+  std::atomic<bool> exited_;
   std::atomic<bool> processing_;
 };
 

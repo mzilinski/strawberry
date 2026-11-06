@@ -39,6 +39,9 @@
 #include <QUrl>
 
 #include "core/enginemetadata.h"
+#ifdef HAVE_SPOTIFY
+#  include "constants/spotifysettings.h"
+#endif
 #include "core/song.h"
 
 class EngineBase : public QObject {
@@ -90,6 +93,7 @@ class EngineBase : public QObject {
 
   virtual bool Init() = 0;
   virtual State state() const = 0;
+  virtual State actual_state() const { return state(); }
   virtual void StartPreloading(const QUrl &media_url, const QUrl &stream_url, const bool force_stop_at_end, const qint64 beginning_offset_nanosec, const qint64 end_offset_nanosec);
   virtual bool Load(const QUrl &media_url, const QUrl &stream_url, const TrackChangeFlags track_change_flags, const bool force_stop_at_end, const quint64 beginning_offset_nanosec, const qint64 end_offset_nanosec, const std::optional<double> ebur128_integrated_loudness_lufs);
   virtual bool Play(const bool pause, const quint64 offset_nanosec) = 0;
@@ -120,6 +124,7 @@ class EngineBase : public QObject {
   virtual bool CustomDeviceSupport(const QString &output) const = 0;
   virtual bool ALSADeviceSupport(const QString &output) const = 0;
   virtual bool ExclusiveModeSupport(const QString &output) const = 0;
+  virtual bool FadingSupport(const QString &output) const = 0;
 
   // Plays a media stream represented with the URL 'u' from the given 'beginning' to the given 'end' (usually from 0 to a song's length).
   // Both markers should be passed in nanoseconds. 'end' can be negative, indicating that the real length of 'u' stream is unknown.
@@ -257,6 +262,7 @@ class EngineBase : public QObject {
   // Spotify
 #ifdef HAVE_SPOTIFY
   QString spotify_access_token_;
+  SpotifySettings::Bitrate spotify_bitrate_;
 #endif
 
   bool about_to_end_emitted_;

@@ -57,6 +57,7 @@
 #include <QVariant>
 #include <QString>
 #include <QUrl>
+#include <QVersionNumber>
 #include <QTimer>
 #include <QTimeLine>
 #include <QEasingCurve>
@@ -74,6 +75,10 @@
 #include "gstenginepipeline.h"
 #include "gstbusmessageevent.h"
 #include "gstbufferconsumer.h"
+
+#ifdef HAVE_SPOTIFY
+#  include "constants/spotifysettings.h"
+#endif
 
 using namespace std::chrono_literals;
 using namespace Qt::Literals::StringLiterals;
@@ -143,6 +148,10 @@ GstEnginePipeline::GstEnginePipeline(QObject *parent)
       device_warmup_duration_ms_(BackendSettings::kDefaultDeviceWarmupDuration),
       device_warmup_pending_(false),
       device_warmup_generation_(0),
+      device_warmup_waiting_(false),
+      paused_before_playing_(false),
+      play_held_(false),
+      target_state_(GST_STATE_NULL),
       proxy_authentication_(false),
       channels_enabled_(false),
       channels_(0),
@@ -157,6 +166,9 @@ GstEnginePipeline::GstEnginePipeline(QObject *parent)
       rg_fallbackgain_(0.0),
       rg_compression_(true),
       ebur128_loudness_normalization_(false),
+#ifdef HAVE_SPOTIFY
+      spotify_bitrate_(SpotifySettings::kDefaultBitrate),
+#endif
       ebur128_loudness_normalizing_gain_db_(0.0),
       segment_start_(0),
       segment_start_received_(false),
@@ -203,6 +215,7 @@ GstEnginePipeline::GstEnginePipeline(QObject *parent)
       bufferprobe_(nullptr),
       logged_unsupported_analyzer_format_(false),
       about_to_finish_(false),
+      gapless_transition_(false),
       finish_requested_(false),
       finished_(false),
       bus_message_generation_(0),
@@ -386,6 +399,10 @@ void GstEnginePipeline::set_fading_enabled(const bool enabled) {
 void GstEnginePipeline::set_spotify_access_token(const QString &spotify_access_token) {
   QMutexLocker l(&mutex_spotify_access_token_);
   spotify_access_token_ = spotify_access_token;
+}
+
+void GstEnginePipeline::set_spotify_bitrate(const SpotifySettings::Bitrate spotify_bitrate) {
+  spotify_bitrate_ = spotify_bitrate;
 }
 #endif  // HAVE_SPOTIFY
 
@@ -726,6 +743,11 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
 
   }
 
+  // ASIO drivers usually only allow one stream at a time, treat it as exclusive so the engine never runs two pipelines at once (crossfading, fading out).
+  if (output_ == QLatin1String(GstEngine::kASIOSink)) {
+    exclusive_mode_ = true;
+  }
+
   if (g_object_class_find_property(G_OBJECT_GET_CLASS(audiosink_), "exclusive")) {
     if (exclusive_mode_) {
       qLog(Debug) << "Setting exclusive mode for" << output_;
@@ -812,36 +834,21 @@ bool GstEnginePipeline::InitAudioBin(QString &error) {
     }
     // Setting the equalizer bands:
     //
-    // GStreamer's GstIirEqualizerNBands sets up shelve filters for the first and last bands as corner cases.
-    // That was causing the "inverted slider" bug.
-    // As a workaround, we create two dummy bands at both ends of the spectrum.
-    // This causes the actual first and last adjustable bands to be implemented using band-pass filters.
+    // GstIirEqualizerNBands uses a low shelf filter for the first band and a high shelf filter for the last band, which boost or cut everything below or above them, that was causing the "inverted slider" bug.
+    // Set all bands to peak filters, so the first and last bands only change the frequencies around them like the others.
+    // The band properties are doubles, and g_object_set() reads the arguments as the type of the property, so the values have to be passed as doubles.
 
-    g_object_set(G_OBJECT(equalizer_), "num-bands", kEqBandCount + 2, nullptr);
-
-    // Dummy first band (bandwidth 0, cutting below 20Hz):
-    GstObject *first_band = GST_OBJECT(gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_), 0));
-    if (first_band) {
-      g_object_set(G_OBJECT(first_band), "freq", 20.0, "bandwidth", 0, "gain", 0.0F, nullptr);
-      g_object_unref(G_OBJECT(first_band));
-    }
-
-    // Dummy last band (bandwidth 0, cutting over 20KHz):
-    GstObject *last_band = GST_OBJECT(gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_), kEqBandCount + 1));
-    if (last_band) {
-      g_object_set(G_OBJECT(last_band), "freq", 20000.0, "bandwidth", 0, "gain", 0.0F, nullptr);
-      g_object_unref(G_OBJECT(last_band));
-    }
+    g_object_set(G_OBJECT(equalizer_), "num-bands", kEqBandCount, nullptr);
 
     int last_band_frequency = 0;
     for (int i = 0; i < kEqBandCount; ++i) {
-      const int index_in_eq = i + 1;
-      GstObject *band = GST_OBJECT(gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_), static_cast<guint>(index_in_eq)));
+      GstObject *band = GST_OBJECT(gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_), static_cast<guint>(i)));
       if (band) {
         const float frequency = static_cast<float>(kEqBandFrequencies[i]);
         const float bandwidth = frequency - static_cast<float>(last_band_frequency);
         last_band_frequency = static_cast<int>(frequency);
-        g_object_set(G_OBJECT(band), "freq", frequency, "bandwidth", bandwidth, "gain", 0.0F, nullptr);
+        gst_util_set_object_arg(G_OBJECT(band), "type", "peak");
+        g_object_set(G_OBJECT(band), "freq", static_cast<double>(frequency), "bandwidth", static_cast<double>(bandwidth), "gain", 0.0, nullptr);
         g_object_unref(G_OBJECT(band));
       }
 
@@ -1160,7 +1167,13 @@ void GstEnginePipeline::ElementAddedCallback(GstBin *bin, GstBin *sub_bin, GstEl
   const QString element_name = QString::fromUtf8(element_name_char);
   g_free(element_name_char);
 
-  if (bin != GST_BIN(instance->audiobin_) || element_name == "fake-audio-sink"_L1 || GST_ELEMENT(gst_element_get_parent(element)) != instance->audiosink_) return;
+  if (bin != GST_BIN(instance->audiobin_) || element_name == "fake-audio-sink"_L1) return;
+
+  // gst_element_get_parent() returns a new reference, which must be released.
+  GstObject *parent = gst_element_get_parent(element);
+  const bool parent_is_audiosink = parent && GST_ELEMENT(parent) == instance->audiosink_;
+  if (parent) gst_object_unref(parent);
+  if (!parent_is_audiosink) return;
 
   GstElement *volume = nullptr;
   if (GST_IS_STREAM_VOLUME(element)) {
@@ -1268,7 +1281,8 @@ void GstEnginePipeline::SourceSetupCallback(GstElement *playbin, GstElement *sou
     QMutexLocker mutex_locker_url(&instance->mutex_url_);
     if (instance->media_url_.scheme() == u"spotify"_s) {
       if (g_object_class_find_property(G_OBJECT_GET_CLASS(source), "bitrate")) {
-        g_object_set(source, "bitrate", 2, nullptr);
+        // Set the bitrate enum by its nick, which is the bitrate in kbit/s ("96", "160" or "320").
+        gst_util_set_object_arg(G_OBJECT(source), "bitrate", QByteArray::number(static_cast<int>(instance->spotify_bitrate_.load())).constData());
       }
       QMutexLocker mutex_locker_spotify_access_token(&instance->mutex_spotify_access_token_);
       if (!instance->spotify_access_token_.isEmpty() && g_object_class_find_property(G_OBJECT_GET_CLASS(source), "access-token")) {
@@ -1282,9 +1296,11 @@ void GstEnginePipeline::SourceSetupCallback(GstElement *playbin, GstElement *sou
   // If the pipeline was buffering we stop that now.
   if (instance->buffering_.load()) {
     qLog(Debug) << "Buffering finished";
+    // Request PLAYING before buffering is finished, so playback is pending and pausing is not missed in between.
+    // This can run on a streaming thread, so whether playback is held when paused while waiting to start is decided in SetStateAsyncSlot() on the pipeline's own thread.
+    instance->SetStateAsync(GST_STATE_PLAYING);
     instance->buffering_ = false;
     Q_EMIT instance->BufferingFinished();
-    instance->SetStateAsync(GST_STATE_PLAYING);
   }
 
 }
@@ -1298,7 +1314,8 @@ void GstEnginePipeline::NotifyVolumeCallback(GstElement *element, GParamSpec *pa
   // Ignore device-originated volume changes during a gapless transition.
   // When the next track has a different sample rate the sink renegotiates in place and can reset the (device) stream volume; that is not a user action, so adopting it here would clobber the slider (and the stored volume).
   // StreamStartMessageReceived re-asserts the correct volume once the new stream has started.
-  if (instance->about_to_finish_.load()) return;
+  // This is not about_to_finish_, since that is cleared when the next URL is set, before the transition.
+  if (instance->gapless_transition_.load()) return;
 
   // Read the property from the element that actually fired the signal, not from instance->volume_
   // SetupVolume may have swapped volume_ between the signal being queued and this callback running,
@@ -1334,7 +1351,7 @@ void GstEnginePipeline::NotifyMuteCallback(GstElement *element, GParamSpec *para
 
   // Ignore device-originated mute changes during a gapless transition, for the same reason NotifyVolumeCallback does: a sink renegotiation is not a user action.
   // StreamStartMessageReceived re-asserts the correct mute state once the new stream has started.
-  if (instance->about_to_finish_.load()) return;
+  if (instance->gapless_transition_.load()) return;
 
   // Read the property from the element that actually fired the signal, not from instance->volume_ - see NotifyVolumeCallback for why.
   gboolean mute = FALSE;
@@ -1653,6 +1670,9 @@ GstPadProbeReturn GstEnginePipeline::BufferProbeCallback(GstPad *pad, GstPadProb
         instance->next_end_offset_nanosec_.store(0);
       }
 
+      // The stream continues, so there is no stream start which ends the transition.
+      instance->gapless_transition_ = false;
+
       // GstEngine will try to seek to the start of the new section, but we're already there so ignore it.
       instance->ignore_next_seek_ = true;
       Q_EMIT instance->EndOfStreamReached(instance->id(), true);
@@ -1844,6 +1864,7 @@ void GstEnginePipeline::StreamStartMessageReceived() {
 
   // Clear the transition flag only after re-asserting, so NotifyVolumeCallback/NotifyMuteCallback keep ignoring the renegotiation's reset for the whole transition.
   about_to_finish_ = false;
+  gapless_transition_ = false;
 
   Q_EMIT EndOfStreamReached(id(), true);
 
@@ -1917,6 +1938,8 @@ void GstEnginePipeline::ErrorMessageReceived(GstMessage *msg) {
       return;
     }
     qLog(Info) << "Ignoring error" << domain << code << message << debugstr << "when loading next track";
+    // The next track can't be played, so there is no transition to it.
+    gapless_transition_ = false;
     GstPad *pad = gst_element_get_static_pad(audiobin_, "sink");
     if (pad) {
       QFuture<gboolean> future = QtConcurrent::run(shared_pad_send_threadpool(), [pad]() {
@@ -1932,6 +1955,17 @@ void GstEnginePipeline::ErrorMessageReceived(GstMessage *msg) {
 
   qLog(Error) << __FUNCTION__ << "ID:" << id() << "Domain:" << domain << "Code:" << code << "Error:" << message;
   qLog(Error) << __FUNCTION__ << "ID:" << id() << "Domain:" << domain << "Code:" << code << "Debug:" << debugstr;
+
+#ifdef HAVE_SPOTIFY
+  // The Spotify plugin only reports "Resource not found." with "track is not available" in the debug message, which doesn't tell the user why.
+  if (domain == GST_RESOURCE_ERROR && code == GST_RESOURCE_ERROR_NOT_FOUND && GST_IS_ELEMENT(GST_MESSAGE_SRC(msg))) {
+    GstElementFactory *factory = gst_element_get_factory(GST_ELEMENT(GST_MESSAGE_SRC(msg)));
+    if (factory && g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), "spotifyaudiosrc") == 0) {
+      const QVersionNumber minimum_version(SpotifySettings::kMinimumGstPluginVersionMajor, SpotifySettings::kMinimumGstPluginVersionMinor, SpotifySettings::kMinimumGstPluginVersionMicro);
+      message = tr("The track is not available from Spotify. This happens for every track when the GStreamer Spotify plugin is older than version %1, or when the account doesn't have Spotify Premium. Some tracks are also not available in every country.").arg(minimum_version.toString());
+    }
+  }
+#endif
 
 #ifdef Q_OS_WIN32
   // Ignore non-error received for directsoundsink: "IDirectSoundBuffer_GetStatus The operation completed successfully"
@@ -2074,6 +2108,8 @@ void GstEnginePipeline::StateChangedMessageReceived(GstMessage *msg) {
   if (next_uri_set_.load() && next_uri_need_reset_.load() && new_state == GST_STATE_READY && pending_seek_nanosec_.load() != -1) {
     qLog(Debug) << "Reverting next uri and going to pause state.";
     next_uri_set_ = false;
+    // There is no transition to the next stream now.
+    gapless_transition_ = false;
     {
       QMutexLocker l(&mutex_url_);
       g_object_set(G_OBJECT(pipeline_), "uri", gst_url_.constData(), nullptr);
@@ -2090,7 +2126,10 @@ void GstEnginePipeline::StateChangedMessageReceived(GstMessage *msg) {
     }
     else {
       const GstState requested_state = pending_state_.exchange(GST_STATE_NULL);
-      if (requested_state != GST_STATE_NULL) {
+      if (requested_state == GST_STATE_PLAYING && paused_before_playing_.load()) {
+        play_held_ = true;
+      }
+      else if (requested_state != GST_STATE_NULL) {
         SetStateAsync(requested_state);
       }
     }
@@ -2152,7 +2191,11 @@ void GstEnginePipeline::BufferingMessageReceived(GstMessage *msg) {
     }
     else {
       const GstState pending = pending_state_.exchange(GST_STATE_NULL);
-      if (pending != GST_STATE_NULL) {
+      // Paused while playback was waiting to start, so hold playback until unpaused.
+      if (pending == GST_STATE_PLAYING && paused_before_playing_.load()) {
+        play_held_ = true;
+      }
+      else if (pending != GST_STATE_NULL) {
         SetStateAsync(pending);
       }
     }
@@ -2227,6 +2270,7 @@ void GstEnginePipeline::SetStateAsync(const GstState state) {
 
   ++set_state_async_in_progress_;
   const quint64 state_request_generation = set_state_request_generation_;
+  target_state_ = state;
 
   // Safe against destruction: ~QObject calls removePostedEvents(this), so this queued call is discarded if the pipeline is destroyed on its own thread before the slot runs.
   QMetaObject::invokeMethod(this, [this, state, state_request_generation]() { SetStateAsyncSlot(state, state_request_generation); }, Qt::QueuedConnection);
@@ -2267,6 +2311,21 @@ void GstEnginePipeline::SetStateAsyncSlot(const GstState state, const quint64 st
     return;
   }
 
+  // Paused while playback was waiting to start, so hold playback until unpaused, this is decided here on the pipeline's own thread, so it is serialized with pausing and unpausing.
+  if (state == GST_STATE_PLAYING && paused_before_playing_.load()) {
+    qLog(Debug) << "Pipeline" << id() << "holding playback, paused before playing";
+    play_held_ = true;
+    {
+      // Playback is held, so it is not going to PLAYING, unless a newer request was made in the meantime.
+      QMutexLocker locker(&mutex_set_state_async_);
+      if (set_state_async_in_progress_ == 0 && state_request_generation == set_state_request_generation_) {
+        target_state_ = GST_STATE_PAUSED;
+      }
+    }
+    EmitFinishedIfQuiescent();
+    return;
+  }
+
   // ApplyState() rather than SetState(), so this request does not bump the generation itself.
   // Bumping here would invalidate requests queued between the check above and the bump (SetStateAsync() can run on a GStreamer streaming thread), even though those are newer than this one and must still be applied.
   // Requests queued before this one need no generation to be dropped: the queued_after check above already takes care of them.
@@ -2280,6 +2339,7 @@ QFuture<GstStateChangeReturn> GstEnginePipeline::SetState(const GstState state) 
   {
     QMutexLocker locker(&mutex_set_state_async_);
     ++set_state_request_generation_;
+    target_state_ = state;
   }
 
   return ApplyState(state);
@@ -2292,6 +2352,7 @@ QFuture<GstStateChangeReturn> GstEnginePipeline::ApplyState(const GstState state
 
   // Every explicit transition invalidates any warm-up timer waiting to resume playback, so a stale timer cannot override a newer pause/stop/start.
   ++device_warmup_generation_;
+  device_warmup_waiting_ = false;
 
   QFutureWatcher<GstStateChangeReturn> *watcher = new QFutureWatcher<GstStateChangeReturn>(this);
   QObject::connect(watcher, &QFutureWatcher<GstStateChangeReturn>::finished, this, [this, watcher, state]() {
@@ -2358,6 +2419,9 @@ void GstEnginePipeline::EmitFinishedIfQuiescent() {
 
 QFuture<GstStateChangeReturn> GstEnginePipeline::Play(const bool pause, const quint64 offset_nanosec) {
 
+  paused_before_playing_ = false;
+  play_held_ = false;
+
   if (offset_nanosec != 0) {
     // Preroll paused so we can seek to the offset while the pipeline is prerolling, then transition to the requested state once the seek completes (pending_state_ carries it).
     pending_seek_nanosec_ = static_cast<qint64>(offset_nanosec);
@@ -2380,32 +2444,94 @@ QFuture<GstStateChangeReturn> GstEnginePipeline::Play(const bool pause, const qu
 
 }
 
+bool GstEnginePipeline::play_pending() const {
+
+  // The audio device warm-up starts playback when it elapses, also while buffering, so playback is pending while waiting for it, also when buffering.
+  if (device_warmup_pending_.load() || device_warmup_waiting_.load()) return true;
+
+  return !buffering_.load() && (pending_state_.load() == GST_STATE_PLAYING || (target_state_.load() == GST_STATE_PLAYING && state() != GST_STATE_PLAYING));
+
+}
+
+void GstEnginePipeline::PauseBeforePlaying() {
+
+  paused_before_playing_ = true;
+
+  // Going to PLAYING is already in progress, so go to PAUSED instead, the state changes are applied in order, and start playback when unpaused.
+  if (target_state_.load() == GST_STATE_PLAYING) {
+    play_held_ = true;
+    SetState(GST_STATE_PAUSED);
+  }
+
+}
+
+void GstEnginePipeline::UnpauseBeforePlaying() {
+
+  paused_before_playing_ = false;
+
+  if (play_held_.exchange(false)) {
+    // The pipeline reached PLAYING before the pause requested in PauseBeforePlaying() is applied, so the state is not updated yet, request PLAYING after the pause, the state changes are applied in order.
+    // The audio device was playing, so it does not need to warm up.
+    if (state() == GST_STATE_PLAYING) {
+      SetState(GST_STATE_PLAYING);
+    }
+    // Playback was held while paused, so start it now, the audio device has been idle while paused, so wait for the warm-up again.
+    else {
+      StartPlaybackAfterWarmup();
+    }
+  }
+
+}
+
 void GstEnginePipeline::StartPlaybackAfterWarmup() {
 
   // Nothing to do if the pipeline is already playing.
   if (state() == GST_STATE_PLAYING) return;
 
+  // Paused while waiting to start, so hold playback until unpaused.
+  if (paused_before_playing_.load()) {
+    play_held_ = true;
+    return;
+  }
+
   // The pipeline has prerolled and the audio device is open; wait for the configured warm-up delay (if any) so the device (DAC) has time to become ready before playback starts, then transition to PLAYING.
   if (device_warmup_duration_ms_ > 0) {
     qLog(Debug) << "Waiting" << device_warmup_duration_ms_ << "ms for the audio device to warm up before playing";
     const quint64 device_warmup_generation = device_warmup_generation_.load();
-    QTimer::singleShot(device_warmup_duration_ms_, this, [this, device_warmup_generation]() {
-      // Only resume if no newer transition happened while we were waiting (e.g. the user paused/stopped or a newer start superseded this one)...
-      if (device_warmup_generation != device_warmup_generation_.load()) {
-        qLog(Debug) << "Warm-up delay elapsed but a newer state change superseded it, not starting playback";
-        return;
-      }
-      // ...and the pipeline is still paused (it was not stopped and did not otherwise leave the prerolled state).
-      if (state() != GST_STATE_PAUSED) {
-        qLog(Debug) << "Warm-up delay elapsed but pipeline is" << GstStateText(state()) << "not paused, not starting playback";
-        return;
-      }
-      SetStateAsync(GST_STATE_PLAYING);
-    });
+    device_warmup_waiting_ = true;
+    QTimer::singleShot(device_warmup_duration_ms_, this, [this, device_warmup_generation]() { DeviceWarmupElapsed(device_warmup_generation); });
   }
   else {
     SetStateAsync(GST_STATE_PLAYING);
   }
+
+}
+
+void GstEnginePipeline::DeviceWarmupElapsed(const quint64 device_warmup_generation) {
+
+  // Only resume if no newer transition happened while we were waiting (e.g. the user paused/stopped or a newer start superseded this one)...
+  // The newer transition already cleared device_warmup_waiting_, and it can be set again for a newer warm-up, so it is not cleared here.
+  if (device_warmup_generation != device_warmup_generation_.load()) {
+    qLog(Debug) << "Warm-up delay elapsed but a newer state change superseded it, not starting playback";
+    return;
+  }
+  device_warmup_waiting_ = false;
+
+  // ...and the pipeline is still prerolled (it was not stopped and did not otherwise leave the prerolled state).
+  // It can still be PLAYING from before a pause which is not applied yet, when unpausing quickly, the request to go to PLAYING is applied after the pause.
+  const GstState current_state = state();
+  if (current_state != GST_STATE_PAUSED && current_state != GST_STATE_PLAYING) {
+    qLog(Debug) << "Warm-up delay elapsed but pipeline is" << GstStateText(current_state) << "not prerolled, not starting playback";
+    return;
+  }
+
+  if (paused_before_playing_.load()) {
+    qLog(Debug) << "Warm-up delay elapsed but playback was paused, not starting playback";
+    play_held_ = true;
+    return;
+  }
+
+  SetStateAsync(GST_STATE_PLAYING);
 
 }
 
@@ -2442,15 +2568,20 @@ bool GstEnginePipeline::Seek(const qint64 nanosec) {
 
   if (success) {
     qLog(Debug) << "Seek succeeded";
-    const GstState state = pending_state_.exchange(GST_STATE_NULL);
-    if (state == GST_STATE_PLAYING) {
-      // Starting playback from an offset (saved position or CUE-sheet start): the device was opened during preroll, so honour the warm-up delay here too before going to PLAYING.
-      StartPlaybackAfterWarmup();
-    }
-    else if (state != GST_STATE_NULL) {
-      qLog(Debug) << "Setting state from pending state" << GstStateText(state);
-      SetState(state);
-    }
+  }
+  else {
+    qLog(Warning) << "Seek to" << nanosec << "failed";
+  }
+
+  // The pending state is also applied when the seek failed, like for a stream which is not seekable, so playback started from an offset starts from where the pipeline is instead, otherwise it never starts.
+  const GstState state = pending_state_.exchange(GST_STATE_NULL);
+  if (state == GST_STATE_PLAYING) {
+    // Starting playback from an offset (saved position or CUE-sheet start): the device was opened during preroll, so honour the warm-up delay here too before going to PLAYING.
+    StartPlaybackAfterWarmup();
+  }
+  else if (state != GST_STATE_NULL) {
+    qLog(Debug) << "Setting state from pending state" << GstStateText(state);
+    SetState(state);
   }
 
   return success;
@@ -2653,10 +2784,9 @@ void GstEnginePipeline::UpdateEqualizer() {
       gain *= 0.12F;
     }
 
-    const int index_in_eq = i + 1;
-    // Offset because of the first dummy band we created.
-    GstObject *band = GST_OBJECT(gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_), static_cast<guint>(index_in_eq)));
-    g_object_set(G_OBJECT(band), "gain", gain, nullptr);
+    GstObject *band = GST_OBJECT(gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_), static_cast<guint>(i)));
+    if (!band) continue;
+    g_object_set(G_OBJECT(band), "gain", static_cast<double>(gain), nullptr);
     g_object_unref(G_OBJECT(band));
   }
 
@@ -2965,6 +3095,9 @@ void GstEnginePipeline::SetNextUrl() {
   // When the next uri is not playable an error message is send when the pipeline goes to PLAY (or PAUSE) state or immediately if it is currently in PLAY state.
   {
     QMutexLocker l(&mutex_next_url_);
+    // The transition happens when the current stream ends, so keep ignoring volume and mute changes until the next stream started.
+    // This is set before the next URL, since the stream start or an error for it can clear it as soon as it is set, which setting this after would undo.
+    gapless_transition_ = true;
     qLog(Debug) << "Setting next URL to" << Utilities::UrlForLog(next_gst_url_);
     g_object_set(G_OBJECT(pipeline_), "uri", next_gst_url_.constData(), nullptr);
   }

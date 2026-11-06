@@ -85,6 +85,9 @@ class CollectionBackendInterface : public QObject {
 
   virtual SharedPtr<Database> db() const = 0;
 
+  // Closes the database connection of the calling thread, which must be done after querying from a concurrent thread.
+  virtual void Close() = 0;
+
   virtual void GetAllSongsAsync(const int id = 0) = 0;
 
   // Get a list of directories in the collection.  Emits DirectoriesDiscovered.
@@ -147,7 +150,7 @@ class CollectionBackend : public CollectionBackendInterface {
 
   void Init(SharedPtr<Database> db, SharedPtr<TaskManager> task_manager, const Song::Source source, const QString &songs_table, const QString &dirs_table = QString(), const QString &subdirs_table = QString());
 
-  void Close();
+  void Close() override;
 
   void ExitAsync();
 
@@ -229,10 +232,20 @@ class CollectionBackend : public CollectionBackendInterface {
   SongList ExecuteQuery(const QString &sql, const QVariantList &bound_values = QVariantList());
 
   void AddOrUpdateSongsAsync(const SongList &songs);
-  void UpdateSongsBySongIDAsync(const SongMap &new_songs);
+  // Adds and updates the songs by song ID, and deletes the songs not in new_songs, unless delete_missing_songs is false, which is used when some of the songs could not be fetched.
+  void UpdateSongsBySongIDAsync(const SongMap &new_songs, const bool delete_missing_songs = true);
 
   void UpdateSongRatingAsync(const int id, const float rating, const bool save_tags = false);
   void UpdateSongsRatingAsync(const QList<int> &ids, const float rating, const bool save_tags = false);
+
+  // Sets the lyrics, or the synchronized lyrics when synced_lyrics is true, and where they are stored, empty lyrics clear them.
+  // With only_if_empty, the lyrics are only set if the song has none and they were not cleared, so lyrics found automatically do not replace lyrics added or cleared in the meantime.
+  void UpdateSongLyricsAsync(const int id, const bool synced_lyrics, const QString &lyrics, const Song::StorageType storage_type, const bool only_if_empty, const bool save_tags = false);
+  // Updates only the lyrics and their storage type of lyrics_songs, and only the synchronized lyrics, their storage type and the LRC file mtime of synced_lyrics_songs.
+  // Other changes to the songs since they were loaded, including the other lyrics, are kept.
+  void UpdateSongsLyricsAsync(const SongList &lyrics_songs, const SongList &synced_lyrics_songs);
+  // Sets where the lyrics, or the synchronized lyrics when synced_lyrics is true, are stored, only if they are still the expected lyrics stored as expected.
+  void UpdateSongLyricsStorageTypeAsync(const int id, const bool synced_lyrics, const QString &expected_lyrics, const Song::StorageType expected_storage_type, const Song::StorageType storage_type);
 
   void DeleteSongsAsync(const SongList &songs);
   void DeleteSongsByUrlsAsync(const QList<QUrl> &url);
@@ -247,7 +260,7 @@ class CollectionBackend : public CollectionBackendInterface {
   void AddDirectory(const QString &path);
   void RemoveDirectory(const CollectionDirectory &dir);
   void AddOrUpdateSongs(const SongList &songs);
-  void UpdateSongsBySongID(const SongMap &new_songs);
+  void UpdateSongsBySongID(const SongMap &new_songs, const bool delete_missing_songs = true);
   void UpdateMTimesOnly(const SongList &songs);
   void DeleteSongs(const SongList &songs);
   void DeleteSongsByUrls(const QList<QUrl> &url);
@@ -274,6 +287,9 @@ class CollectionBackend : public CollectionBackendInterface {
 
   void UpdateSongRating(const int id, const float rating, const bool save_tags = false);
   void UpdateSongsRating(const QList<int> &id_list, const float rating, const bool save_tags = false);
+  void UpdateSongLyrics(const int id, const bool synced_lyrics, const QString &lyrics, const int storage_type, const bool only_if_empty, const bool save_tags);
+  void UpdateSongsLyrics(const SongList &lyrics_songs, const SongList &synced_lyrics_songs);
+  void UpdateSongLyricsStorageType(const int id, const bool synced_lyrics, const QString &expected_lyrics, const int expected_storage_type, const int storage_type);
 
   void UpdateLastSeen(const int directory_id, const int expire_unavailable_songs_days);
   void ExpireSongs(const int directory_id, const int expire_unavailable_songs_days);
@@ -294,6 +310,7 @@ class CollectionBackend : public CollectionBackendInterface {
   void TotalArtistCountUpdated(const int count);
   void TotalAlbumCountUpdated(const int count);
   void SongsRatingChanged(const SongList &songs, const bool save_tags);
+  void SongsLyricsChanged(const SongList &songs, const bool save_lyrics_tags, const bool save_synced_lyrics_tags);
 
   void ExitFinished();
 
@@ -301,13 +318,10 @@ class CollectionBackend : public CollectionBackendInterface {
 
  private:
   struct CompilationInfo {
-    CompilationInfo() : has_compilation_detected(0), has_not_compilation_detected(0) {}
-
-    QList<QUrl> urls;
+    // Each URL once, CUE sheet songs share the URL of the file.
+    QList<QUrl> urls_compilation_detected;
+    QList<QUrl> urls_not_compilation_detected;
     QStringList artists;
-
-    int has_compilation_detected;
-    int has_not_compilation_detected;
   };
 
   bool UpdateCompilations(const QSqlDatabase &db, SongList &changed_songs, const QUrl &url, const bool compilation_detected);

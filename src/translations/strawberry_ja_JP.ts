@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>ライブラリは空です!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>音楽を追加するにはここをクリックします</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>現在のプレイリストに追加する</translation>
@@ -1393,6 +1385,17 @@ If there are no matches then it will use the largest image in the directory.</so
     <message>
       <source>Search for this</source>
       <translation>これを検索</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>ライブラリは空です!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>音楽を追加するにはここをクリックします</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>歌詞を自動的に完成させる</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>歌詞</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(複数の曲で異なります)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>歌詞</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>前へ</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>次へ</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>トラックの保存中</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>メタデータを %1に書き込めませんでした</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>メタデータを%1: %2に書き込めませんでした</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>トラックの読み込み中</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>読み込んでいます…</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>見つかりませんでした。</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>トラック情報の編集</translation>
@@ -7065,26 +7122,6 @@ Are you sure you want to continue?</source>
       <translation>音楽を取得するにはここをクリック</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>現在のプレイリストに追加する</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>現在のプレイリストを置き換える</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>新しいプレイリストで開く</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>トラックをキューに追加</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>次に再生する</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>お気に入りから削除</translation>
     </message>
@@ -7106,6 +7143,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>カタログを更新</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation type="unfinished">Streaming Tabs View</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>アーティスト</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>アルバム</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>曲</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>検索</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>%1 の設定...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>%1 の設定...</translation>
     </message>
   </context>
   <context>
@@ -7180,40 +7251,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>グループ化</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>%1 の設定...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation type="unfinished">Streaming Tabs View</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>アーティスト</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>アルバム</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>曲</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>検索</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>%1 の設定...</translation>
     </message>
   </context>
   <context>

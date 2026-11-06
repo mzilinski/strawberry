@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ Jika tidak ada yang cocok maka akan menggunakan gambar terbesar dalam direktori.
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Pustaka Anda kosong!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Klik di sini untuk menambahkan musik</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Tambahkan ke daftar putar saat ini</translation>
@@ -1393,6 +1385,17 @@ Jika tidak ada yang cocok maka akan menggunakan gambar terbesar dalam direktori.
     <message>
       <source>Search for this</source>
       <translation>Cari ini</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Pustaka Anda kosong!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Klik di sini untuk menambahkan musik</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ Jika tidak ada yang cocok maka akan menggunakan gambar terbesar dalam direktori.
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation type="unfinished">Complete lyrics automatically</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Lirik</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation type="unfinished">(different across multiple songs)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Lirik</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Sebelumnya</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Lanjut</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Menyimpan trek</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation type="unfinished">Could not write metadata to %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation type="unfinished">Could not write metadata to %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Memuat trek</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation type="unfinished">loading...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation type="unfinished">Not found.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Sunting informasi trek</translation>
@@ -7065,26 +7122,6 @@ Apakah Anda yakin ingin melanjutkan?</translation>
       <translation>Klik di sini untuk menerima musik</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Tambahkan ke daftar putar saat ini</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Ganti daftar putar saat ini</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Buka di daftar putar baru</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Antre trek</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Antre untuk diputar selanjutnya</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Buang dari favorit</translation>
     </message>
@@ -7106,6 +7143,40 @@ Apakah Anda yakin ingin melanjutkan?</translation>
     <message>
       <source>Refresh catalogue</source>
       <translation>Segarkan katalog</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation type="unfinished">Streaming Tabs View</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Artis</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Album</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Lagu</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Cari</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Konfigurasi %1...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Konfigurasi %1...</translation>
     </message>
   </context>
   <context>
@@ -7180,40 +7251,6 @@ Apakah Anda yakin ingin melanjutkan?</translation>
     <message>
       <source>Group by</source>
       <translation>Grup berdasarkan</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Konfigurasi %1...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation type="unfinished">Streaming Tabs View</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Artis</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Album</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Lagu</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Cari</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Konfigurasi %1...</translation>
     </message>
   </context>
   <context>

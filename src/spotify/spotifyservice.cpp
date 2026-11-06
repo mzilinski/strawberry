@@ -27,6 +27,7 @@
 #include <QUrl>
 #include <QTimer>
 
+#include "includes/shared_ptr.h"
 #include "constants/spotifysettings.h"
 #include "utilities/cryptutils.h"
 #include "core/logging.h"
@@ -36,7 +37,6 @@
 #include "core/database.h"
 #include "core/networkaccessmanager.h"
 #include "core/oauthenticator.h"
-#include "streaming/streamingsearchview.h"
 #include "collection/collectionbackend.h"
 #include "collection/collectionmodel.h"
 #include "spotifyservice.h"
@@ -181,6 +181,42 @@ SpotifyService::~SpotifyService() {
 
 }
 
+SharedPtr<CollectionBackend> SpotifyService::artists_collection_backend() {
+  return artists_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> SpotifyService::albums_collection_backend() {
+  return albums_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> SpotifyService::songs_collection_backend() {
+  return songs_collection_backend_;
+}
+
+CollectionModel *SpotifyService::artists_collection_model() {
+  return artists_collection_model_;
+}
+
+CollectionModel *SpotifyService::albums_collection_model() {
+  return albums_collection_model_;
+}
+
+CollectionModel *SpotifyService::songs_collection_model() {
+  return songs_collection_model_;
+}
+
+CollectionFilter *SpotifyService::artists_collection_filter_model() {
+  return artists_collection_model_->filter();
+}
+
+CollectionFilter *SpotifyService::albums_collection_filter_model() {
+  return albums_collection_model_->filter();
+}
+
+CollectionFilter *SpotifyService::songs_collection_filter_model() {
+  return songs_collection_model_->filter();
+}
+
 void SpotifyService::Exit() {
 
   wait_for_exit_ << &*artists_collection_backend_ << &*albums_collection_backend_ << &*songs_collection_backend_;
@@ -269,6 +305,19 @@ void SpotifyService::Authenticate() {
 void SpotifyService::ClearSession() {
 
   oauth_->ClearSession();
+
+}
+
+void SpotifyService::AccessTokenRejected(const QByteArray &authorization_header) {
+
+  // A request sent with the previous access token can be rejected after it was refreshed, the current access token is fine then.
+  if (authorization_header != oauth_->authorization_header()) return;
+
+  // The access token can expire before it is refreshed, for example while the system is suspended, so refresh it instead of clearing the session, which would lose the refresh token too.
+  // The session is cleared when refreshing fails because the refresh token is no longer valid.
+  if (!oauth_->RefreshAccessToken()) {
+    oauth_->ClearSession();
+  }
 
 }
 
@@ -483,8 +532,13 @@ void SpotifyService::SendSearch() {
       return;
   }
 
+  // The previous search request is deleted later, so disconnect it, otherwise its results can still arrive and end the new search.
+  if (search_request_) {
+    QObject::disconnect(&*search_request_, nullptr, this, nullptr);
+  }
   search_request_.reset(new SpotifyRequest(this, network_, type, this));
   QObject::connect(&*search_request_, &SpotifyRequest::Results, this, &SpotifyService::SearchResultsReceived);
+  QObject::connect(&*search_request_, &SpotifyRequest::SongsAvailable, this, &SpotifyService::SearchSongsAvailable);
   QObject::connect(&*search_request_, &SpotifyRequest::UpdateStatus, this, &SpotifyService::SearchUpdateStatus);
   QObject::connect(&*search_request_, &SpotifyRequest::ProgressSetMaximum, this, &SpotifyService::SearchProgressSetMaximum);
   QObject::connect(&*search_request_, &SpotifyRequest::UpdateProgress, this, &SpotifyService::SearchUpdateProgress);
@@ -497,6 +551,9 @@ void SpotifyService::SendSearch() {
 void SpotifyService::SearchResultsReceived(const int id, const SongMap &songs, const QString &error) {
 
   Q_EMIT SearchResults(id, songs, error);
-  search_request_.reset();
+  // Only the current search request is finished, not one started after these results.
+  if (id == search_id_) {
+    search_request_.reset();
+  }
 
 }

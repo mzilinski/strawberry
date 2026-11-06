@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2022-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2022-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -92,6 +92,9 @@ class SpotifyRequest : public SpotifyBaseRequest {
 
  Q_SIGNALS:
   void Results(int id, SongMap songs, QString error);
+  // Songs received so far, emitted while the request continues, so they can be shown before it has finished.
+  // The songs emitted with Results can differ, for example by pointing to a downloaded album cover.
+  void SongsAvailable(const int id, const SongMap &songs);
   void UpdateStatus(int id, QString text);
   void ProgressSetMaximum(int id, int max);
   void UpdateProgress(int id, int max);
@@ -157,7 +160,7 @@ class SpotifyRequest : public SpotifyBaseRequest {
   int GetProgress(const int count, const int total);
   void FinishCheck();
   void Error(const QString &error_message, const QVariant &debug_output = QVariant()) override;
-  void Warn(const QString &error_message, const QVariant &debug);
+  void Warn(const QString &error_message, const QVariant &debug = QVariant());
 
  private:
   const SharedPtr<NetworkAccessManager> network_;

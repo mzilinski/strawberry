@@ -23,6 +23,8 @@
 
 #include "config.h"
 
+#include <optional>
+
 #include <QByteArray>
 #include <QString>
 
@@ -37,6 +39,7 @@
 #include <taglib/asffile.h>
 #include <taglib/id3v2tag.h>
 #include <taglib/popularimeterframe.h>
+#include <taglib/synchronizedlyricsframe.h>
 #include <taglib/mp4tag.h>
 #include <taglib/asftag.h>
 
@@ -80,9 +83,13 @@ class TagReaderTagLib : public TagReaderBase {
 
   TagReaderResult SaveSongPlaycount(const QString &filename, const uint playcount) const override;
   TagReaderResult SaveSongRating(const QString &filename, const float rating) const override;
+  TagReaderResult SaveSongLyrics(const QString &filename, const QString &lyrics) const override;
+  TagReaderResult SaveSongSyncedLyrics(const QString &filename, const QString &synced_lyrics) const override;
 
  private:
   static Song::FileType GuessFileType(TagLib::FileRef *fileref);
+  static TagLib::ID3v2::Version ID3v2VersionToSave(const TagLib::ID3v2::Tag *tag, const TagID3v2Version tag_id3v2_version);
+  static bool SaveFile(TagLib::FileRef *fileref, const TagID3v2Version tag_id3v2_version = TagID3v2Version::Default);
   TagReaderResult Read(SharedPtr<TagLib::FileRef> fileref, Song *song) const;
 
   void ParseID3v2Tags(TagLib::ID3v2::Tag *tag, QString *disc, QString *compilation, Song *song) const;
@@ -92,10 +99,18 @@ class TagReaderTagLib : public TagReaderBase {
   void ParseASFTags(TagLib::ASF::Tag *tag, QString *disc, QString *compilation, Song *song) const;
   void ParseASFAttribute(const TagLib::ASF::AttributeListMap &attributes_map, const char *attribute, QString *str) const;
 
-  void SetID3v2Tag(TagLib::ID3v2::Tag *tag, const Song &song) const;
+  bool SetID3v2Tag(TagLib::ID3v2::Tag *tag, const Song &song) const;
   void SetTextFrame(const char *id, const QString &value, TagLib::ID3v2::Tag *tag) const;
   void SetUserTextFrame(const QString &description, const QString &value, TagLib::ID3v2::Tag *tag) const;
   void SetUnsyncLyricsFrame(const QString &value, TagLib::ID3v2::Tag *tag) const;
+  bool SetSyncLyricsFrame(const QString &value, TagLib::ID3v2::Tag *tag) const;
+
+  static bool WriteLyricsToTags(const Song::StorageType storage_type);
+  static void SetLyricsFromTag(Song *song, const QString &lyrics);
+  static void SetSyncedLyricsFromTag(Song *song, const QString &synced_lyrics);
+  static bool IsSupportedSyncLyricsFrame(const TagLib::ID3v2::SynchronizedLyricsFrame *frame);
+  static QString SynchedTextToLRC(const TagLib::ID3v2::SynchronizedLyricsFrame::SynchedTextList &synched_text);
+  static std::optional<TagLib::ID3v2::SynchronizedLyricsFrame::SynchedTextList> LRCToSynchedText(const QString &lrc);
 
   void SetVorbisComments(TagLib::Ogg::XiphComment *vorbis_comment, const Song &song) const;
   void SetAPETag(TagLib::APE::Tag *tag, const Song &song) const;
@@ -119,6 +134,14 @@ class TagReaderTagLib : public TagReaderBase {
   void SetRating(TagLib::ID3v2::Tag *tag, const float rating) const;
   void SetRating(TagLib::MP4::Tag *tag, const float rating) const;
   void SetRating(TagLib::ASF::Tag *tag, const float rating) const;
+
+  void SetLyrics(TagLib::Ogg::XiphComment *vorbis_comment, const QString &lyrics) const;
+  void SetLyrics(TagLib::APE::Tag *tag, const QString &lyrics) const;
+  void SetLyrics(TagLib::MP4::Tag *tag, const QString &lyrics) const;
+  void SetLyrics(TagLib::ASF::Tag *tag, const QString &lyrics) const;
+  void SetSyncedLyrics(TagLib::Ogg::XiphComment *vorbis_comment, const QString &synced_lyrics) const;
+  void SetSyncedLyrics(TagLib::APE::Tag *tag, const QString &synced_lyrics) const;
+  TagReaderResult SaveLyricsToFile(const QString &filename, const QString &lyrics, const bool synced) const;
 
   void SetEmbeddedCover(TagLib::FLAC::File *flac_file, TagLib::Ogg::XiphComment *vorbis_comment, const QByteArray &data, const QString &mimetype) const;
   void SetEmbeddedCover(TagLib::Ogg::XiphComment *vorbis_comment, const QByteArray &data, const QString &mimetype) const;

@@ -2,6 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
+ * Copyright 2016-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,14 +21,25 @@
 
 #include "config.h"
 
+#include <sqlite3.h>
+
+#include <QVariant>
 #include <QSqlDatabase>
+#include <QSqlDriver>
+#include <QSqlError>
 
 #include "core/logging.h"
 #include "scopedtransaction.h"
 
-ScopedTransaction::ScopedTransaction(QSqlDatabase *db) : db_(db), pending_(true) {
+ScopedTransaction::ScopedTransaction(QSqlDatabase *db) : db_(db), started_(false), pending_(false) {
 
-  db->transaction();
+  started_ = db->transaction();
+  if (!started_) {
+    qLog(Error) << "Could not start transaction:" << db->lastError().text();
+  }
+
+  // Only commit or roll back a transaction started here, not one started by someone else on the same connection.
+  pending_ = started_;
 
 }
 
@@ -40,14 +52,38 @@ ScopedTransaction::~ScopedTransaction() {
 
 }
 
-void ScopedTransaction::Commit() {
+bool ScopedTransaction::active() const {
+
+  if (!pending_) return false;
+
+  const QVariant handle = db_->driver()->handle();
+  if (!handle.isValid() || qstrcmp(handle.typeName(), "sqlite3*") != 0) return true;
+
+  sqlite3 *connection = *static_cast<sqlite3* const*>(handle.constData());
+  // Autocommit mode means there is no transaction open.
+  return connection && sqlite3_get_autocommit(connection) == 0;
+
+}
+
+bool ScopedTransaction::Commit() {
+
+  if (!started_) {
+    return false;
+  }
 
   if (!pending_) {
     qLog(Warning) << "Tried to commit a ScopedTransaction twice";
-    return;
+    return false;
   }
 
-  db_->commit();
   pending_ = false;
+
+  if (!db_->commit()) {
+    qLog(Error) << "Could not commit transaction:" << db_->lastError().text();
+    db_->rollback();
+    return false;
+  }
+
+  return true;
 
 }

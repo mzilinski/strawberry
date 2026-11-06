@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +30,7 @@
 #include <QMutex>
 #include <QWaitCondition>
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -86,13 +87,14 @@ class GPodDevice : public ConnectedDevice, public virtual MusicStorage {
   bool FinishDelete(bool success, QString &error_text) override;
 
  protected Q_SLOTS:
-  void LoadFinished(Itdb_iTunesDB *db, const bool success);
+  void LoadFinished(const bool success);
   void LoaderError(const QString &message);
 
  protected:
   Itdb_Track *AddTrackToITunesDb(const Song &metadata);
   void AddTrackToModel(Itdb_Track *track, const QString &prefix);
-  bool RemoveTrackFromITunesDb(const QString &path, const QString &relative_to = QString());
+  Itdb_Track *FindTrackInITunesDb(const QString &path, const QString &relative_to = QString()) const;
+  void RemoveTrackFromITunesDb(Itdb_Track *track);
 
  private:
   void Start();
@@ -112,6 +114,9 @@ class GPodDevice : public ConnectedDevice, public virtual MusicStorage {
   QMutex db_busy_;
   SongList songs_to_add_;
   SongList songs_to_remove_;
+  // The originals of moved files, removed when the tracks are written to the database.
+  // A set, since the same file can be copied more than once, and it can only be removed once.
+  QSet<QString> files_to_remove_;
   QList<SharedPtr<TemporaryFile>> cover_files_;
 };
 

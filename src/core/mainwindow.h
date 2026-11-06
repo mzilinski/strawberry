@@ -34,6 +34,7 @@
 #include <QSortFilterProxyModel>
 #include <QAbstractItemModel>
 #include <QPersistentModelIndex>
+#include <QPointer>
 #include <QMenu>
 #include <QAction>
 #include <QPoint>
@@ -41,6 +42,7 @@
 #include <QList>
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QImage>
 #include <QTimer>
@@ -72,7 +74,9 @@ class CollectionFilter;
 class AlbumCoverChoiceController;
 class CommandlineOptions;
 class DeviceViewContainer;
-class EditTagDialog;
+class SongEditor;
+class TagEditor;
+class LyricsEditor;
 class Equalizer;
 class ErrorDialog;
 class FileView;
@@ -88,8 +92,8 @@ class TagFetcher;
 class TrackSelectionDialog;
 class TranscodeDialog;
 class Ui_MainWindow;
-class StreamingSongsView;
-class StreamingTabsView;
+class StreamingLibraryView;
+class StreamingFavoritesView;
 class SmartPlaylistsViewContainer;
 #ifdef Q_OS_WIN32
 class Windows7ThumbBar;
@@ -171,7 +175,10 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   void PlaylistClearCurrent();
   void RescanSongs();
   void EditTracks();
-  void EditTagDialogAccepted();
+  void TagEditorAccepted();
+  void EditLyrics();
+  void EditSongLyrics(const Song &song);
+  void LyricsEditorAccepted();
   void RenumberTracks();
   void SelectionSetValue();
   void EditValue();
@@ -241,7 +248,12 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   void CheckShowErrorDialog();
   void ShowTranscodeDialog();
   SettingsDialog *CreateSettingsDialog();
-  EditTagDialog *CreateEditTagDialog();
+  TagEditor *CreateTagEditor();
+  LyricsEditor *CreateLyricsEditor();
+  // Gets the selected songs in the current playlist which can be edited, returns false when there are none.
+  bool GetSelectedPlaylistSongs(SongList *songs, PlaylistItemPtrList *items) const;
+  // Updates the playlist items of the songs saved by the tag editor or the lyrics editor.
+  void UpdateEditedPlaylistItems(SongEditor *song_editor, Playlist *playlist);
   void OpenSettingsDialog();
   void OpenSettingsDialogAtPage(const SettingsDialog::Page page);
 
@@ -279,7 +291,7 @@ class MainWindow : public QMainWindow, public PlatformInterface {
 
   void FocusSearchField();
 
-  void DeleteFilesFinished(const SongList &songs_with_errors);
+  void DeleteFilesFinished(const SongList &songs_with_errors, const QStringList &log);
 
   void FetchStreamingMetadata();
   void ProcessMetadataQueue();
@@ -304,6 +316,8 @@ class MainWindow : public QMainWindow, public PlatformInterface {
 
   void SetToggleScrobblingIcon(const bool value);
 
+  bool IsActivePlaylistCurrentRow(const int row) const;
+
 #ifdef HAVE_DBUS
   void UpdateTaskbarProgress(const bool visible, const double progress = 0);
 #endif
@@ -327,7 +341,14 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   Lazy<ErrorDialog> error_dialog_;
   Lazy<AboutDialog> about_dialog_;
   Lazy<Console> console_;
-  Lazy<EditTagDialog> edit_tag_dialog_;
+  Lazy<TagEditor> tag_editor_;
+  QPointer<Playlist> tag_editor_playlist_;
+  // The playlist of the songs set while the dialog was loading or saving the previous songs.
+  QPointer<Playlist> tag_editor_pending_playlist_;
+  Lazy<LyricsEditor> lyrics_editor_;
+  QPointer<Playlist> lyrics_editor_playlist_;
+  // The playlist of the songs set while the lyrics editor was loading or saving the previous songs.
+  QPointer<Playlist> lyrics_editor_pending_playlist_;
   AlbumCoverChoiceController *album_cover_choice_controller_;
 
   GlobalShortcutsManager *globalshortcuts_manager_;
@@ -355,22 +376,22 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   SmartPlaylistsViewContainer *smartplaylists_view_;
 
 #ifdef HAVE_SUBSONIC
-  StreamingSongsView *subsonic_view_;
+  StreamingLibraryView *subsonic_view_;
 #endif
 #ifdef HAVE_TIDAL
-  StreamingTabsView *tidal_view_;
+  StreamingFavoritesView *tidal_view_;
 #endif
 #ifdef HAVE_SPOTIFY
-  StreamingTabsView *spotify_view_;
+  StreamingFavoritesView *spotify_view_;
 #endif
 #ifdef HAVE_QOBUZ
-  StreamingTabsView *qobuz_view_;
+  StreamingFavoritesView *qobuz_view_;
 #endif
 #ifdef HAVE_PLEX
-  StreamingSongsView *plex_view_;
+  StreamingLibraryView *plex_view_;
 #endif
 #ifdef HAVE_JELLYFIN
-  StreamingTabsView *jellyfin_view_;
+  StreamingFavoritesView *jellyfin_view_;
 #endif
 
   RadioViewContainer *radio_view_;
@@ -394,7 +415,8 @@ class MainWindow : public QMainWindow, public PlatformInterface {
   QAction *playlist_queue_;
   QAction *playlist_queue_play_next_;
   QAction *playlist_skip_;
-  QAction *playlist_add_to_another_;
+  QAction *playlist_edit_lyrics_;
+  QMenu *playlist_add_to_another_menu_;
   QList<QAction*> playlistitem_actions_;
   QAction *playlistitem_actions_separator_;
   QAction *playlist_rescan_songs_;

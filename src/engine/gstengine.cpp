@@ -71,6 +71,7 @@ using namespace Qt::Literals::StringLiterals;
 
 const char *GstEngine::kAutoSink = "autoaudiosink";
 const char *GstEngine::kALSASink = "alsasink";
+const char *GstEngine::kASIOSink = "asiosink";
 
 namespace {
 constexpr char kOpenALSASink[] = "openalsink";
@@ -161,6 +162,27 @@ bool GstEngine::Init() {
 
 EngineBase::State GstEngine::state() const {
 
+  // The pipeline is not started yet while waiting for an exclusive pipeline to finish, so report the state it will start in, so pausing and unpausing works.
+  if (current_pipeline_ && (delayed_state_ == State::Playing || delayed_state_ == State::Paused)) {
+    return delayed_state_;
+  }
+
+  // Paused while playback was waiting to start, also when the pipeline reached PLAYING before the pause is applied, so unpausing resumes it.
+  if (current_pipeline_ && current_pipeline_->paused_before_playing()) {
+    return State::Paused;
+  }
+
+  // Report playback that is waiting for the pipeline to preroll or the audio device to warm up as playing, so pausing pauses it, instead of unpausing it.
+  if (current_pipeline_ && current_pipeline_->state() != GST_STATE_PLAYING && current_pipeline_->play_pending()) {
+    return State::Playing;
+  }
+
+  return actual_state();
+
+}
+
+EngineBase::State GstEngine::actual_state() const {
+
   if (!current_pipeline_) return stream_url_.isEmpty() ? State::Empty : State::Idle;
 
   switch (current_pipeline_->state()) {
@@ -227,6 +249,11 @@ bool GstEngine::Load(const QUrl &media_url, const QUrl &stream_url, const Engine
     pipeline->SetSourceDevice(gst_url.source_device);
   }
 
+  // A delayed start was for the previous pipeline.
+  delayed_state_ = State::Empty;
+  delayed_state_pause_ = false;
+  delayed_state_offset_nanosec_ = 0;
+
   GstEnginePipelinePtr old_pipeline = current_pipeline_;
   current_pipeline_ = pipeline;
 
@@ -291,6 +318,8 @@ bool GstEngine::Play(const bool pause, const quint64 offset_nanosec) {
     delayed_state_ = pause ? State::Paused : State::Playing;
     delayed_state_pause_ = pause;
     delayed_state_offset_nanosec_ = offset_nanosec;
+    // Report the state it will start in, so the player and playback controls show it, and pausing or unpausing changes it.
+    Q_EMIT StateChanged(delayed_state_);
     return true;
   }
 
@@ -357,11 +386,35 @@ void GstEngine::Pause() {
 
   if (!current_pipeline_ || current_pipeline_->is_buffering()) return;
 
+  // Playback is waiting for an exclusive pipeline to finish, so start it paused instead, and keep the offset, also when it was already going to start paused.
+  if (delayed_state_ == State::Playing || delayed_state_ == State::Paused) {
+    const bool changed = delayed_state_ != State::Paused;
+    delayed_state_ = State::Paused;
+    delayed_state_pause_ = true;
+    if (changed) {
+      Q_EMIT StateChanged(State::Paused);
+    }
+    return;
+  }
+
   delayed_state_ = State::Empty;
   delayed_state_pause_ = false;
   delayed_state_offset_nanosec_ = 0;
 
   if (fadeout_pause_pipeline_) {
+    return;
+  }
+
+  // Already paused while playback was waiting to start.
+  if (current_pipeline_->paused_before_playing()) {
+    return;
+  }
+
+  // Playback is waiting for the pipeline to preroll or the audio device to warm up, so hold it, otherwise it starts playing when it is ready.
+  if (current_pipeline_->state() != GST_STATE_PLAYING && current_pipeline_->play_pending()) {
+    current_pipeline_->PauseBeforePlaying();
+    Q_EMIT StateChanged(State::Paused);
+    StopTimers();
     return;
   }
 
@@ -381,6 +434,22 @@ void GstEngine::Pause() {
 void GstEngine::Unpause() {
 
   if (!current_pipeline_ || current_pipeline_->is_buffering()) return;
+
+  // Playback is waiting for an exclusive pipeline to finish, so start it playing instead of paused.
+  if (delayed_state_ == State::Paused) {
+    delayed_state_ = State::Playing;
+    delayed_state_pause_ = false;
+    Q_EMIT StateChanged(State::Playing);
+    return;
+  }
+
+  // Paused while playback was waiting to start, so let it start.
+  if (current_pipeline_->paused_before_playing()) {
+    current_pipeline_->UnpauseBeforePlaying();
+    Q_EMIT StateChanged(State::Playing);
+    StartTimers();
+    return;
+  }
 
   if (current_pipeline_->state() == GST_STATE_PAUSED) {
 
@@ -530,10 +599,16 @@ bool GstEngine::ExclusiveModeSupport(const QString &output) const {
   return output == QLatin1String(kWASAPISink) || output == QLatin1String(kWASAPI2Sink);
 }
 
+bool GstEngine::FadingSupport(const QString &output) const {
+  // ASIO drivers usually only allow one stream at a time, so fading between two pipelines doesn't work, and fading on a single pipeline breaks bit-perfect output.
+  return output != QLatin1String(kASIOSink);
+}
+
 void GstEngine::ReloadSettings() {
 
 #ifdef HAVE_SPOTIFY
   const QString old_spotify_access_token = spotify_access_token_;
+  const SpotifySettings::Bitrate old_spotify_bitrate = spotify_bitrate_;
 #endif
 
   EngineBase::ReloadSettings();
@@ -543,6 +618,10 @@ void GstEngine::ReloadSettings() {
 #ifdef HAVE_SPOTIFY
   if (current_pipeline_ && old_spotify_access_token != spotify_access_token_) {
     current_pipeline_->set_spotify_access_token(spotify_access_token_);
+  }
+  // Applies to the next track, the bitrate can't be changed for the track that is playing.
+  if (current_pipeline_ && old_spotify_bitrate != spotify_bitrate_) {
+    current_pipeline_->set_spotify_bitrate(spotify_bitrate_);
   }
 #endif
 
@@ -760,11 +839,14 @@ void GstEngine::PlayDone(const GstStateChangeReturn state_change_return, const b
     return;
   }
 
-  if (!pause) {
+  // Paused before the pipeline finished starting, so playback is held until unpaused.
+  const bool paused = pause || current_pipeline_->paused_before_playing();
+
+  if (!paused) {
     StartTimers();
   }
 
-  Q_EMIT StateChanged(pause ? State::Paused : State::Playing);
+  Q_EMIT StateChanged(paused ? State::Paused : State::Playing);
 
   // We've successfully started playing a media stream with this URL
   Q_EMIT ValidSongRequested(stream_url_);
@@ -910,10 +992,11 @@ GstEnginePipelinePtr GstEngine::CreatePipeline() {
   pipeline->set_channels(channels_enabled_, channels_);
   pipeline->set_bs2b_enabled(bs2b_enabled_);
   pipeline->set_strict_ssl_enabled(strict_ssl_enabled_);
-  pipeline->set_fading_enabled(fadeout_enabled_ || crossfade_enabled_ || autocrossfade_enabled_ || fadeout_pause_enabled_);
+  pipeline->set_fading_enabled(FadingSupport(output_) && (fadeout_enabled_ || crossfade_enabled_ || autocrossfade_enabled_ || fadeout_pause_enabled_));
 
 #ifdef HAVE_SPOTIFY
   pipeline->set_spotify_access_token(spotify_access_token_);
+  pipeline->set_spotify_bitrate(spotify_bitrate_);
 #endif
 
   pipeline->AddBufferConsumer(this);
@@ -987,19 +1070,13 @@ void GstEngine::PipelineFinished(const int pipeline_id) {
   }
 
   if (current_pipeline_ && old_pipelines_.isEmpty() && delayed_state_ != State::Empty) {
-    switch (delayed_state_) {
-      case State::Playing:
-        Play(delayed_state_pause_, delayed_state_offset_nanosec_);
-        break;
-      case State::Paused:
-        Pause();
-        break;
-      default:
-        break;
-    }
+    // The pipeline was not started yet, so a delayed paused start is started paused, Pause() does nothing for a pipeline which is not playing.
+    const bool pause = delayed_state_ == State::Paused || delayed_state_pause_;
+    const quint64 offset_nanosec = delayed_state_offset_nanosec_;
     delayed_state_ = State::Empty;
     delayed_state_pause_ = false;
     delayed_state_offset_nanosec_ = 0;
+    Play(pause, offset_nanosec);
   }
 
 }
@@ -1079,8 +1156,9 @@ void GstEngine::StreamDiscovered(GstDiscoverer *discoverer, GstDiscovererInfo *i
   Q_UNUSED(discoverer)
   Q_UNUSED(error)
 
+  // This is called from the thread running the GLib main loop, which is not always the thread of the engine.
+  // Only the discovered info is read here, the pipelines are only used in StreamDiscoveredMetadata() in the thread of the engine.
   GstEngine *instance = reinterpret_cast<GstEngine*>(self);
-  if (!instance->current_pipeline_) return;
 
   const QByteArray discovered_url = gst_discoverer_info_get_uri(info);
 
@@ -1092,74 +1170,83 @@ void GstEngine::StreamDiscovered(GstDiscoverer *discoverer, GstDiscovererInfo *i
   }
 
   GList *audio_streams = gst_discoverer_info_get_audio_streams(info);
-  if (audio_streams) {
-
-    GstDiscovererStreamInfo *stream_info = reinterpret_cast<GstDiscovererStreamInfo*>(g_list_first(audio_streams)->data);
-
-    EngineMetadata engine_metadata;
-    bool match = false;
-    {
-      QMutexLocker l(instance->current_pipeline_->mutex_url());
-      if (discovered_url == instance->current_pipeline_->gst_url()) {
-        match = true;
-        engine_metadata.type = EngineMetadata::Type::Current;
-        engine_metadata.media_url = instance->current_pipeline_->media_url();
-        engine_metadata.stream_url = instance->current_pipeline_->stream_url();
-      }
-    }
-    if (!match) {
-      QMutexLocker l(instance->current_pipeline_->mutex_next_url());
-      if (discovered_url == instance->current_pipeline_->next_gst_url()) {
-        engine_metadata.type = EngineMetadata::Type::Next;
-        engine_metadata.media_url = instance->current_pipeline_->next_media_url();
-        engine_metadata.stream_url = instance->current_pipeline_->next_stream_url();
-      }
-    }
-    engine_metadata.samplerate = static_cast<int>(gst_discoverer_audio_info_get_sample_rate(GST_DISCOVERER_AUDIO_INFO(stream_info)));
-    engine_metadata.bitdepth = static_cast<int>(gst_discoverer_audio_info_get_depth(GST_DISCOVERER_AUDIO_INFO(stream_info)));
-    engine_metadata.bitrate = static_cast<int>(gst_discoverer_audio_info_get_bitrate(GST_DISCOVERER_AUDIO_INFO(stream_info)) / 1000);
-
-    GstCaps *caps = gst_discoverer_stream_info_get_caps(stream_info);
-
-    if (caps) {
-      const guint caps_size = gst_caps_get_size(caps);
-      for (guint i = 0; i < caps_size; ++i) {
-        GstStructure *gst_structure = gst_caps_get_structure(caps, i);
-        if (!gst_structure) continue;
-        QString mimetype = QString::fromUtf8(gst_structure_get_name(gst_structure));
-        if (!mimetype.isEmpty() && mimetype != "audio/mpeg"_L1) {
-          engine_metadata.filetype = Song::FiletypeByMimetype(mimetype);
-          if (engine_metadata.filetype == Song::FileType::Unknown) {
-            qLog(Error) << "Unknown mimetype" << mimetype;
-          }
-        }
-      }
-
-      if (engine_metadata.filetype == Song::FileType::Unknown) {
-        gchar *codec_description = gst_pb_utils_get_codec_description(caps);
-        QString filetype_description = (codec_description ? QString::fromUtf8(codec_description) : QString());
-        g_free(codec_description);
-        if (!filetype_description.isEmpty()) {
-          engine_metadata.filetype = Song::FiletypeByDescription(filetype_description);
-          if (engine_metadata.filetype == Song::FileType::Unknown) {
-            qLog(Error) << "Unknown filetype" << filetype_description;
-          }
-        }
-      }
-
-      gst_caps_unref(caps);
-    }
-
-    gst_discoverer_stream_info_list_free(audio_streams);
-
-    qLog(Debug) << "Got stream info for" << Utilities::UrlForLog(discovered_url) + u':' << Song::TextForFiletype(engine_metadata.filetype);
-
-    Q_EMIT instance->MetaData(engine_metadata);
-
-  }
-  else {
+  if (!audio_streams) {
     qLog(Error) << "Could not detect an audio stream in" << Utilities::UrlForLog(discovered_url);
+    return;
   }
+
+  GstDiscovererStreamInfo *stream_info = reinterpret_cast<GstDiscovererStreamInfo*>(g_list_first(audio_streams)->data);
+
+  EngineMetadata engine_metadata;
+  engine_metadata.samplerate = static_cast<int>(gst_discoverer_audio_info_get_sample_rate(GST_DISCOVERER_AUDIO_INFO(stream_info)));
+  engine_metadata.bitdepth = static_cast<int>(gst_discoverer_audio_info_get_depth(GST_DISCOVERER_AUDIO_INFO(stream_info)));
+  engine_metadata.bitrate = static_cast<int>(gst_discoverer_audio_info_get_bitrate(GST_DISCOVERER_AUDIO_INFO(stream_info)) / 1000);
+
+  GstCaps *caps = gst_discoverer_stream_info_get_caps(stream_info);
+
+  if (caps) {
+    const guint caps_size = gst_caps_get_size(caps);
+    for (guint i = 0; i < caps_size; ++i) {
+      GstStructure *gst_structure = gst_caps_get_structure(caps, i);
+      if (!gst_structure) continue;
+      QString mimetype = QString::fromUtf8(gst_structure_get_name(gst_structure));
+      if (!mimetype.isEmpty() && mimetype != "audio/mpeg"_L1) {
+        engine_metadata.filetype = Song::FiletypeByMimetype(mimetype);
+        if (engine_metadata.filetype == Song::FileType::Unknown) {
+          qLog(Error) << "Unknown mimetype" << mimetype;
+        }
+      }
+    }
+
+    if (engine_metadata.filetype == Song::FileType::Unknown) {
+      gchar *codec_description = gst_pb_utils_get_codec_description(caps);
+      QString filetype_description = (codec_description ? QString::fromUtf8(codec_description) : QString());
+      g_free(codec_description);
+      if (!filetype_description.isEmpty()) {
+        engine_metadata.filetype = Song::FiletypeByDescription(filetype_description);
+        if (engine_metadata.filetype == Song::FileType::Unknown) {
+          qLog(Error) << "Unknown filetype" << filetype_description;
+        }
+      }
+    }
+
+    gst_caps_unref(caps);
+  }
+
+  gst_discoverer_stream_info_list_free(audio_streams);
+
+  // Called directly when already in the thread of the engine, otherwise queued.
+  QMetaObject::invokeMethod(instance, [instance, discovered_url, engine_metadata]() { instance->StreamDiscoveredMetadata(discovered_url, engine_metadata); }, Qt::AutoConnection);
+
+}
+
+void GstEngine::StreamDiscoveredMetadata(const QByteArray &discovered_url, EngineMetadata engine_metadata) {
+
+  if (!current_pipeline_) return;
+
+  {
+    // Hold both locks, in the same order as the pipeline, so the next URL can't become the current URL between checking them.
+    QMutexLocker lock_url(current_pipeline_->mutex_url());
+    QMutexLocker lock_next_url(current_pipeline_->mutex_next_url());
+    if (discovered_url == current_pipeline_->gst_url()) {
+      engine_metadata.type = EngineMetadata::Type::Current;
+      engine_metadata.media_url = current_pipeline_->media_url();
+      engine_metadata.stream_url = current_pipeline_->stream_url();
+    }
+    else if (discovered_url == current_pipeline_->next_gst_url()) {
+      engine_metadata.type = EngineMetadata::Type::Next;
+      engine_metadata.media_url = current_pipeline_->next_media_url();
+      engine_metadata.stream_url = current_pipeline_->next_stream_url();
+    }
+    else {
+      // The stream is not playing or queued anymore, the metadata would not belong to any song.
+      return;
+    }
+  }
+
+  qLog(Debug) << "Got stream info for" << Utilities::UrlForLog(discovered_url) + u':' << Song::TextForFiletype(engine_metadata.filetype);
+
+  Q_EMIT MetaData(engine_metadata);
 
 }
 

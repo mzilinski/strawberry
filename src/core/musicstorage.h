@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -61,7 +61,13 @@ class MusicStorage {
 
   struct CopyJob {
     CopyJob() : overwrite_(false), remove_original_(false), albumcover_(false) {}
+    // The file which is removed when remove_original_ is set, this is not the source when the source is a transcoded temporary file.
+    QString original() const { return original_source_.isEmpty() ? source_ : original_source_; }
     QString source_;
+    QString original_source_;
+    // The collection or device directory of the original, empty directories left by removing the original are removed up to this directory, but not this directory itself.
+    // When it's empty, no directories are removed.
+    QString original_root_;
     QString destination_;
     Song metadata_;
     bool overwrite_;

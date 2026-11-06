@@ -23,7 +23,6 @@
 #include <QString>
 #include <QMap>
 
-#include "constants/timeconstants.h"
 #include "core/song.h"
 #include "filterparser.h"
 #include "filtertreenop.h"
@@ -100,6 +99,7 @@ const QMap<QString, FilterColumn> &GetFilterColumnsMap() {
     filter_columns_map.insert(u"url"_s, FilterColumn::URL);
     filter_columns_map.insert(u"track"_s, FilterColumn::Track);
     filter_columns_map.insert(u"year"_s, FilterColumn::Year);
+    filter_columns_map.insert(u"originalyear"_s, FilterColumn::OriginalYear);
     filter_columns_map.insert(u"samplerate"_s, FilterColumn::Samplerate);
     filter_columns_map.insert(u"bitdepth"_s, FilterColumn::Bitdepth);
     filter_columns_map.insert(u"bitrate"_s, FilterColumn::Bitrate);
@@ -137,6 +137,7 @@ const QMap<FilterColumn, ColumnType> &GetColumnTypesMap() {
     column_types_map.insert(FilterColumn::URL, ColumnType::Text);
     column_types_map.insert(FilterColumn::Track, ColumnType::Int);
     column_types_map.insert(FilterColumn::Year, ColumnType::Int);
+    column_types_map.insert(FilterColumn::OriginalYear, ColumnType::Int);
     column_types_map.insert(FilterColumn::Samplerate, ColumnType::Int);
     column_types_map.insert(FilterColumn::Bitdepth, ColumnType::Int);
     column_types_map.insert(FilterColumn::Bitrate, ColumnType::Int);
@@ -323,7 +324,12 @@ FilterTree *FilterParser::parseSearchTerm() {
       previous_char_operator = false;
     }
     if (in_quotes) {
-      if (*iter_ == u'"') {
+      if (*iter_ == u'\\' && iter_ + 1 != end_ && (*(iter_ + 1) == u'"' || *(iter_ + 1) == u'\\')) {
+        // An escaped quote or backslash, other backslashes are kept as they are.
+        ++iter_;
+        buf_ += *iter_;
+      }
+      else if (*iter_ == u'"') {
         in_quotes = false;
       }
       else {
@@ -340,7 +346,8 @@ FilterTree *FilterParser::parseSearchTerm() {
         prefix.clear();  // Prefix isn't allowed here - let's ignore it
         previous_char_operator = true;
       }
-      else if (iter_->isSpace() || *iter_ == u'(' || *iter_ == u')' || *iter_ == u'-') {
+      else if (iter_->isSpace() || *iter_ == u'(' || *iter_ == u')') {
+        // A '-' only negates at the start of a search term, which is handled by parseSearchExpression(), inside a search term it's part of the value, for example in blink-182.
         break;
       }
       else if (buf_.isEmpty()) {
@@ -455,7 +462,8 @@ FilterTree *FilterParser::createSearchTermTreeNode(const QString &column, const 
       case ColumnType::Int64:{
         qint64 number = 0;
         if (filter_column == FilterColumn::Length) {
-          number = ParseTime(value) * kNsecPerSec;
+          // The length is compared in whole seconds.
+          number = ParseTime(value);
         }
         else {
           number = value.toLongLong();
@@ -609,6 +617,16 @@ float FilterParser::ParseRating(const QString &rating_str) {
   }
 
   return rating;
+
+}
+
+QString FilterParser::QuoteValue(const QString &value) {
+
+  QString escaped_value = value;
+  escaped_value.replace(u'\\', "\\\\"_L1);
+  escaped_value.replace(u'"', "\\\""_L1);
+
+  return QLatin1Char('"') + escaped_value + QLatin1Char('"');
 
 }
 

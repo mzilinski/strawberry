@@ -2,6 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -57,6 +58,9 @@ class FileView : public QWidget {
   void ReloadSettings();
 
   void SetPath(const QString &path);
+
+  // Returns true when the path is the root or inside it, the paths are compared without resolving them, and case-insensitively on Windows.
+  static bool PathIsInsideRoot(const QString &path, const QString &root);
   void SetTaskManager(SharedPtr<TaskManager> task_manager);
 
  protected:
@@ -81,7 +85,7 @@ class FileView : public QWidget {
   void ToggleViewMode();
 
   void Delete(const QStringList &filenames);
-  void DeleteFinished(const SongList &songs_with_errors);
+  void DeleteFinished(const SongList &songs_with_errors, const QStringList &log);
 
  public Q_SLOTS:
   void AddTreeRootPath(const QString &path);

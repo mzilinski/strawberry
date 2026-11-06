@@ -41,7 +41,7 @@ namespace {
 constexpr char kUrlSearch[] = "https://api.lyrics.ovh/v1/";
 }  // namespace
 
-OVHLyricsProvider::OVHLyricsProvider(const SharedPtr<NetworkAccessManager> network, QObject *parent) : JsonLyricsProvider(u"Lyrics.ovh"_s, true, false, network, parent) {}
+OVHLyricsProvider::OVHLyricsProvider(const SharedPtr<NetworkAccessManager> network, QObject *parent) : JsonLyricsProvider(u"Lyrics.ovh"_s, true, false, false, network, parent) {}
 
 void OVHLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &request) {
 
@@ -54,7 +54,7 @@ void OVHLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &req
 OVHLyricsProvider::JsonObjectResult OVHLyricsProvider::ParseJsonObject(QNetworkReply *reply) {
 
   if (reply->error() != QNetworkReply::NoError && reply->error() < 200) {
-    return JsonObjectResult(ErrorCode::NetworkError, QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+    return JsonObjectResult(ErrorCode::NetworkError, QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error())));
   }
 
   JsonObjectResult result(ErrorCode::Success);
@@ -86,7 +86,7 @@ OVHLyricsProvider::JsonObjectResult OVHLyricsProvider::ParseJsonObject(QNetworkR
   if (result.error_code != ErrorCode::APIError) {
     if (reply->error() != QNetworkReply::NoError) {
       result.error_code = ErrorCode::NetworkError;
-      result.error_message = QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error());
+      result.error_message = QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error()));
     }
     else if (result.http_status_code != 200) {
       result.error_code = ErrorCode::HttpError;

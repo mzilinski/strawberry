@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2013-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2013-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,13 +32,13 @@
 class SettingsDialog;
 class Ui_BackendSettingsPage;
 class Player;
-class DeviceFinders;
+class AudioDeviceListers;
 
 class BackendSettingsPage : public SettingsPage {
   Q_OBJECT
 
  public:
-  explicit BackendSettingsPage(SettingsDialog *dialog, const SharedPtr<Player> player, const SharedPtr<DeviceFinders> device_finders, QWidget *parent = nullptr);
+  explicit BackendSettingsPage(SettingsDialog *dialog, const SharedPtr<Player> player, const SharedPtr<AudioDeviceListers> audio_device_listers, QWidget *parent = nullptr);
   ~BackendSettingsPage() override;
 
   void Load() override;
@@ -76,7 +76,7 @@ class BackendSettingsPage : public SettingsPage {
  private:
   Ui_BackendSettingsPage *ui_;
   const SharedPtr<Player> player_;
-  const SharedPtr<DeviceFinders> device_finders_;
+  const SharedPtr<AudioDeviceListers> audio_device_listers_;
 
   bool configloaded_;
 

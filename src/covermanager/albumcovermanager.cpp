@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2023, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -168,7 +168,7 @@ AlbumCoverManager::AlbumCoverManager(const SharedPtr<NetworkAccessManager> netwo
   progress_bar_->hide();
   abort_progress_->hide();
   abort_progress_->setText(tr("Abort"));
-  QObject::connect(abort_progress_, &QPushButton::clicked, this, &AlbumCoverManager::CancelRequests);
+  QObject::connect(abort_progress_, &QPushButton::clicked, this, &AlbumCoverManager::AbortRequests);
 
   ui_->albums->setAttribute(Qt::WA_MacShowFocusRect, false);
   ui_->artists->setAttribute(Qt::WA_MacShowFocusRect, false);
@@ -339,6 +339,13 @@ void AlbumCoverManager::CancelRequests() {
   cover_loading_pending_.clear();
   cover_loading_tasks_.clear();
   cover_save_tasks_.clear();
+  cover_save_results_.clear();
+
+  AbortRequests();
+
+}
+
+void AlbumCoverManager::AbortRequests() {
 
   cover_exporter_->Cancel();
 
@@ -481,8 +488,31 @@ void AlbumCoverManager::LoadAlbumCoverAsync(AlbumItem *album_item) {
   cover_options.types = cover_types_;
   cover_options.desired_scaled_size = QSize(kThumbnailSize, kThumbnailSize);
   cover_options.device_pixel_ratio = devicePixelRatioF();
+  CancelAlbumCoverLoading(album_item);
+  album_item->setData(Role_CoverLoaded, false);
   quint64 cover_load_id = albumcover_loader_->LoadImageAsync(cover_options, album_item->data(Role_ArtEmbedded).toBool(), album_item->data(Role_ArtAutomatic).toUrl(), album_item->data(Role_ArtManual).toUrl(), album_item->data(Role_ArtUnset).toBool(), album_item->urls.constFirst());
   cover_loading_tasks_.insert(cover_load_id, album_item);
+
+}
+
+void AlbumCoverManager::CancelAlbumCoverLoading(AlbumItem *album_item) {
+
+  cover_loading_pending_.removeAll(album_item);
+
+  QSet<quint64> ids;
+  for (QMap<quint64, AlbumItem*>::iterator it = cover_loading_tasks_.begin(); it != cover_loading_tasks_.end();) {
+    if (it.value() == album_item) {
+      ids << it.key();
+      it = cover_loading_tasks_.erase(it);
+    }
+    else {
+      ++it;
+    }
+  }
+
+  if (!ids.isEmpty()) {
+    albumcover_loader_->CancelTasks(ids);
+  }
 
 }
 
@@ -491,6 +521,7 @@ void AlbumCoverManager::AlbumCoverLoaded(const quint64 id, const AlbumCoverLoade
   if (!cover_loading_tasks_.contains(id)) return;
 
   AlbumItem *album_item = cover_loading_tasks_.take(id);
+  album_item->setData(Role_CoverLoaded, true);
 
   if (!result.success || result.image_scaled.isNull() || result.type == AlbumCoverLoaderResult::Type::Unset) {
     album_item->setIcon(icon_nocover_item_);
@@ -837,6 +868,8 @@ void AlbumCoverManager::SaveImageToAlbums(Song *song, const AlbumCoverImageResul
       if (cover_url.isEmpty() || !cover_url.isValid() || !cover_url.isLocalFile()) {
         cover_url = album_cover_choice_controller_->SaveCoverToFileAutomatic(song, result);
       }
+      // Saving the cover failed, keep the existing covers instead of clearing them.
+      if (cover_url.isEmpty()) return;
       break;
     case CoverOptions::CoverType::Embedded:
       cover_url.clear();
@@ -883,6 +916,9 @@ void AlbumCoverManager::UnsetCover() {
   // Force the 'none' cover on all of the selected items
   for (QListWidgetItem *list_widget_item : std::as_const(context_menu_items_)) {
     AlbumItem *album_item = static_cast<AlbumItem*>(list_widget_item);
+    // The thumbnail of the removed cover could still be loading.
+    CancelAlbumCoverLoading(album_item);
+    album_item->setData(Role_CoverLoaded, true);
     album_item->setIcon(icon_nocover_item_);
     album_item->setData(Role_ArtEmbedded, false);
     album_item->setData(Role_ArtManual, QUrl());
@@ -893,6 +929,8 @@ void AlbumCoverManager::UnsetCover() {
     album_cover_choice_controller_->UnsetAlbumCoverForSong(&current_song);
   }
 
+  UpdateFilter();
+
 }
 
 void AlbumCoverManager::ClearCover() {
@@ -902,6 +940,9 @@ void AlbumCoverManager::ClearCover() {
   // Force the 'none' cover on all of the selected items
   for (QListWidgetItem *list_widget_item : std::as_const(context_menu_items_)) {
     AlbumItem *album_item = static_cast<AlbumItem*>(list_widget_item);
+    // The thumbnail of the removed cover could still be loading.
+    CancelAlbumCoverLoading(album_item);
+    album_item->setData(Role_CoverLoaded, true);
     album_item->setIcon(icon_nocover_item_);
     album_item->setData(Role_ArtEmbedded, false);
     album_item->setData(Role_ArtAutomatic, QUrl());
@@ -912,6 +953,8 @@ void AlbumCoverManager::ClearCover() {
     album_cover_choice_controller_->ClearAlbumCoverForSong(&current_song);
   }
 
+  UpdateFilter();
+
 }
 
 void AlbumCoverManager::DeleteCover() {
@@ -920,11 +963,16 @@ void AlbumCoverManager::DeleteCover() {
     AlbumItem *album_item = static_cast<AlbumItem*>(list_widget_item);
     Song song = AlbumItemAsSong(album_item);
     album_cover_choice_controller_->DeleteCover(&song);
+    // The thumbnail of the removed cover could still be loading.
+    CancelAlbumCoverLoading(album_item);
+    album_item->setData(Role_CoverLoaded, true);
     album_item->setIcon(icon_nocover_item_);
     album_item->setData(Role_ArtEmbedded, false);
     album_item->setData(Role_ArtManual, QUrl());
     album_item->setData(Role_ArtAutomatic, QUrl());
   }
+
+  UpdateFilter();
 
 }
 
@@ -1009,8 +1057,9 @@ void AlbumCoverManager::SaveAndSetCover(AlbumItem *album_item, const AlbumCoverI
   const bool has_cue = !album_item->data(Role_CuePath).toString().isEmpty();
 
   if (album_cover_choice_controller_->get_save_album_cover_type() == CoverOptions::CoverType::Embedded && Song::save_embedded_cover_supported(filetype) && !has_cue) {
+    // The cover is embedded from the cover file or from the image data.
+    const bool art_embedded = (result.cover_url.isValid() && result.cover_url.isLocalFile()) || !result.image_data.isEmpty();
     for (const QUrl &url : urls) {
-      const bool art_embedded = !result.image_data.isEmpty();
       TagReaderReplyPtr reply = tagreader_client_->SaveCoverAsync(url.toLocalFile(), SaveTagCoverData(result.cover_url.isValid() ? result.cover_url.toLocalFile() : QString(), result.image_data, result.mime_type));
       SharedPtr<QMetaObject::Connection> connection = std::make_shared<QMetaObject::Connection>();
       *connection = QObject::connect(&*reply, &TagReaderReply::Finished, this, [this, reply, album_item, url, art_embedded, connection]() {
@@ -1106,27 +1155,60 @@ void AlbumCoverManager::UpdateExportStatus(const int exported, const int skipped
 }
 
 bool AlbumCoverManager::ItemHasCover(const AlbumItem &album_item) const {
+
+  // The thumbnails are loaded in the background, until then the items show no cover, then albums with covers would be handled as albums without covers, like when fetching the missing covers, which replaces the covers.
+  // The cover types are checked in the same order as when loading the thumbnail, an album without a cover is only handled as unset when that type is used before the other types.
+  if (!album_item.data(Role_CoverLoaded).toBool()) {
+    for (const AlbumCoverLoaderOptions::Type cover_type : std::as_const(cover_types_)) {
+      switch (cover_type) {
+        case AlbumCoverLoaderOptions::Type::Embedded:
+          if (album_item.data(Role_ArtEmbedded).toBool()) return true;
+          break;
+        case AlbumCoverLoaderOptions::Type::Automatic:
+          if (album_item.data(Role_ArtAutomatic).toUrl().isValid()) return true;
+          break;
+        case AlbumCoverLoaderOptions::Type::Manual:
+          if (album_item.data(Role_ArtManual).toUrl().isValid()) return true;
+          break;
+        case AlbumCoverLoaderOptions::Type::Unset:
+          if (album_item.data(Role_ArtUnset).toBool()) return false;
+          break;
+      }
+    }
+    return false;
+  }
+
+  // A cover which couldn't be loaded, like a cover file which was deleted, is missing.
   return album_item.icon().cacheKey() != icon_nocover_item_.cacheKey();
+
 }
 
-void AlbumCoverManager::SaveEmbeddedCoverFinished(TagReaderReplyPtr reply, AlbumItem *album_item, const QUrl &url, const bool art_embedded) {
+void AlbumCoverManager::SaveEmbeddedCoverFinished(TagReaderReplyPtr reply, AlbumItem *album_item, const QUrl &url, bool art_embedded) {
 
-  if (!cover_save_tasks_.contains(album_item, url)) {
+  // Only remove this save, QMultiMap::remove() removes all saves to the same file, saves to the same file can overlap.
+  QMultiMap<AlbumItem*, QUrl>::iterator it = cover_save_tasks_.find(album_item, url);
+  if (it == cover_save_tasks_.end()) {
     return;
   }
-  cover_save_tasks_.remove(album_item, url);
+  cover_save_tasks_.erase(it);
 
-  if (!reply->success()) {
+  // The covers are saved in order, so the last successful save decides whether the album has an embedded cover, it is applied when the last pending save to the album finished, also when that save failed.
+  if (reply->success()) {
+    cover_save_results_.insert(album_item, art_embedded);
+  }
+  else {
     Q_EMIT Error(tr("Could not save cover to file %1.").arg(url.toLocalFile()));
-    return;
   }
 
-  if (cover_save_tasks_.contains(album_item)) {
+  if (cover_save_tasks_.contains(album_item) || !cover_save_results_.contains(album_item)) {
     return;
   }
+  art_embedded = cover_save_results_.take(album_item);
 
-  album_item->setData(Role_ArtEmbedded, true);
-  album_item->setData(Role_ArtUnset, false);
+  album_item->setData(Role_ArtEmbedded, art_embedded);
+  if (art_embedded) {
+    album_item->setData(Role_ArtUnset, false);
+  }
   Song song = AlbumItemAsSong(album_item);
   album_cover_choice_controller_->SaveArtEmbeddedToSong(&song, art_embedded);
   LoadAlbumCoverAsync(album_item);

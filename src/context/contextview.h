@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2013-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2013-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,15 +22,21 @@
 
 #include "config.h"
 
+#include <optional>
+
 #include <QtGlobal>
 #include <QObject>
 #include <QWidget>
 #include <QList>
 #include <QString>
 #include <QImage>
+#include <QColor>
 #include <QAction>
 
+#include "includes/shared_ptr.h"
 #include "core/song.h"
+#include "lyrics/lyricssearchresult.h"
+#include "utilities/lrcutils.h"
 #include "contextalbum.h"
 
 class QMenu;
@@ -40,16 +46,20 @@ class QVBoxLayout;
 class QGridLayout;
 class QScrollArea;
 class QSpacerItem;
-class QResizeEvent;
 class QContextMenuEvent;
+class QShowEvent;
+class QHideEvent;
+class QTimer;
 class QDragEnterEvent;
 class QDropEvent;
+class QPoint;
 
 class ResizableTextEdit;
 class CollectionView;
 class AlbumCoverChoiceController;
 class LyricsProviders;
 class LyricsFetcher;
+class Player;
 
 class ContextView : public QWidget {
   Q_OBJECT
@@ -57,59 +67,84 @@ class ContextView : public QWidget {
  public:
   explicit ContextView(QWidget *parent = nullptr);
 
-  void Init(CollectionView *collectionview, AlbumCoverChoiceController *album_cover_choice_controller, SharedPtr<LyricsProviders> lyrics_providers);
+  void Init(CollectionView *collectionview, AlbumCoverChoiceController *album_cover_choice_controller, SharedPtr<Player> player, SharedPtr<LyricsProviders> lyrics_providers);
 
   ContextAlbum *album_widget() const { return widget_album_; }
   bool album_enabled() const { return action_show_album_->isChecked(); }
-  Song song_playing() const { return song_playing_; }
 
  protected:
-  void resizeEvent(QResizeEvent *e) override;
-  void contextMenuEvent(QContextMenuEvent *e) override;
+  void showEvent(QShowEvent *e) override;
+  void hideEvent(QHideEvent *e) override;
   void dragEnterEvent(QDragEnterEvent *e) override;
   void dropEvent(QDropEvent *e) override;
+  void contextMenuEvent(QContextMenuEvent *e) override;
 
  private:
   void AddActions();
-  static void SetLabelText(QLabel *label, int value, const QString &suffix, const QString &def = QString());
+  static QString DataLabelText(const int value, const QString &suffix);
+  static void SetDataLabel(QLabel *title_label, QLabel *label, const QString &text);
   void NoSong();
   void SetSong();
   void UpdateSong(const Song &song);
   void ResetSong();
-  void GetCoverAutomatically();
   void SearchLyrics();
+  void SetLyricsText();
+  // Parsed synchronized lyrics, cached so they are only parsed again when they change.
+  struct ParsedSyncedLyrics {
+    QString synced_lyrics;
+    std::optional<Utilities::LRCLines> lrc_lines = Utilities::LRCLines();
+  };
+  static const std::optional<Utilities::LRCLines> &ParseSyncedLyrics(ParsedSyncedLyrics *parsed_synced_lyrics, const QString &synced_lyrics);
+  void SetSyncedLyricsText(const QString &provider);
+  void SetSyncedLyricsLineFormat(const qsizetype line, const bool active);
+  qint64 SyncedLyricsPositionMsec() const;
+  qsizetype SyncedLyricsLine(const qint64 position_msec) const;
+  void UpdateSyncedLyricsLine(const qint64 position_msec);
   void UpdateFonts();
 
  Q_SIGNALS:
   void AlbumEnabledChanged();
+  void SaveLyrics(const Song &song, const QString &lyrics, const QString &synced_lyrics);
+  // Opens the lyrics editor for the song.
+  void EditLyrics(const Song &song);
 
  private Q_SLOTS:
   void ActionShowAlbum();
   void ActionShowData();
   void ActionShowLyrics();
   void ActionSearchLyrics();
+  void ActionEditLyrics();
+  void LyricsContextMenu(const QPoint &pos);
   void UpdateNoSong();
   void FadeStopFinished();
-  void UpdateLyrics(const quint64 id, const QString &provider, const QString &lyrics);
+  void UpdateLyrics(const quint64 id, const LyricsSearchResult &result);
+  void UpdateSyncedLyricsPosition();
 
  public Q_SLOTS:
   void ReloadSettings();
   void Playing();
+  void Paused();
   void Stopped();
   void Error();
+  void Seeked(const qint64 microseconds);
   void SongChanged(const Song &song);
   void AlbumCoverLoaded(const Song &song, const QImage &image);
 
  private:
   CollectionView *collectionview_;
   AlbumCoverChoiceController *album_cover_choice_controller_;
+  SharedPtr<Player> player_;
   LyricsFetcher *lyrics_fetcher_;
+  QTimer *timer_synced_lyrics_;
 
   QMenu *menu_options_;
   QAction *action_show_album_;
   QAction *action_show_data_;
   QAction *action_show_lyrics_;
   QAction *action_search_lyrics_;
+  // The menu while a song is playing.
+  QMenu *menu_playing_;
+  QAction *action_edit_lyrics_;
 
   QVBoxLayout *layout_container_;
   QWidget *widget_scrollarea_;
@@ -147,6 +182,20 @@ class ContextView : public QWidget {
   bool lyrics_tried_;
   qint64 lyrics_id_;
   QString lyrics_;
+  QString synced_lyrics_;
+  QString fetched_lyrics_;
+  QString fetched_synced_lyrics_;
+  QString fetched_lyrics_provider_;
+  QString synced_lyrics_shown_;
+  bool synced_lyrics_enabled_;
+  bool synced_lyrics_bold_;
+  bool synced_lyrics_italic_;
+  QColor synced_lyrics_color_;
+  Utilities::LRCLines synced_lyrics_lines_;
+  qsizetype synced_lyrics_line_;
+  qint64 synced_lyrics_offset_msec_;
+  ParsedSyncedLyrics parsed_tag_synced_lyrics_;
+  ParsedSyncedLyrics parsed_fetched_synced_lyrics_;
   QString title_fmt_;
   QString summary_fmt_;
   QFont font_headline_;

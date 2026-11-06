@@ -58,9 +58,11 @@ class GstEngine : public EngineBase, public GstBufferConsumer {
 
   static const char *kAutoSink;
   static const char *kALSASink;
+  static const char *kASIOSink;
 
   bool Init() override;
   State state() const override;
+  State actual_state() const override;
   void StartPreloading(const QUrl &media_url, const QUrl &stream_url, const bool force_stop_at_end, const qint64 beginning_offset_nanosec, const qint64 end_offset_nanosec) override;
   bool Load(const QUrl &media_url, const QUrl &stream_url, const EngineBase::TrackChangeFlags change, const bool force_stop_at_end, const quint64 beginning_offset_nanosec, const qint64 end_offset_nanosec, const std::optional<double> ebur128_integrated_loudness_lufs) override;
   bool Play(const bool pause, const quint64 offset_nanosec) override;
@@ -84,6 +86,7 @@ class GstEngine : public EngineBase, public GstBufferConsumer {
   bool CustomDeviceSupport(const QString &output) const override;
   bool ALSADeviceSupport(const QString &output) const override;
   bool ExclusiveModeSupport(const QString &output) const override;
+  bool FadingSupport(const QString &output) const override;
 
   void ConsumeBuffer(GstBuffer *buffer, const int pipeline_id, const QString &format) override;
 
@@ -142,6 +145,7 @@ class GstEngine : public EngineBase, public GstBufferConsumer {
   void UpdateScope(int chunk_length);
 
   static void StreamDiscovered(GstDiscoverer *discoverer, GstDiscovererInfo *info, GError *error, gpointer self);
+  void StreamDiscoveredMetadata(const QByteArray &discovered_url, EngineMetadata engine_metadata);
   static void StreamDiscoveryFinished(GstDiscoverer *discoverer, gpointer self);
   static QString GSTdiscovererErrorMessage(GstDiscovererResult result);
 

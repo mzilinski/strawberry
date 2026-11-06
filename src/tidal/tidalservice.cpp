@@ -38,7 +38,6 @@
 #include "core/urlhandlers.h"
 #include "core/oauthenticator.h"
 #include "constants/tidalsettings.h"
-#include "streaming/streamingsearchview.h"
 #include "collection/collectionbackend.h"
 #include "collection/collectionmodel.h"
 #include "covermanager/albumcoverloader.h"
@@ -215,6 +214,42 @@ quint64 TidalService::user_id() const {
 
 }
 
+SharedPtr<CollectionBackend> TidalService::artists_collection_backend() {
+  return artists_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> TidalService::albums_collection_backend() {
+  return albums_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> TidalService::songs_collection_backend() {
+  return songs_collection_backend_;
+}
+
+CollectionModel *TidalService::artists_collection_model() {
+  return artists_collection_model_;
+}
+
+CollectionModel *TidalService::albums_collection_model() {
+  return albums_collection_model_;
+}
+
+CollectionModel *TidalService::songs_collection_model() {
+  return songs_collection_model_;
+}
+
+CollectionFilter *TidalService::artists_collection_filter_model() {
+  return artists_collection_model_->filter();
+}
+
+CollectionFilter *TidalService::albums_collection_filter_model() {
+  return albums_collection_model_->filter();
+}
+
+CollectionFilter *TidalService::songs_collection_filter_model() {
+  return songs_collection_model_->filter();
+}
+
 void TidalService::Exit() {
 
   wait_for_exit_ << &*artists_collection_backend_ << &*albums_collection_backend_ << &*songs_collection_backend_;
@@ -298,6 +333,19 @@ void TidalService::AuthorizationUrlReceived(const QUrl &url) {
 void TidalService::ClearSession() {
 
   oauth_->ClearSession();
+
+}
+
+void TidalService::AccessTokenRejected(const QByteArray &authorization_header) {
+
+  // A request sent with the previous access token can be rejected after it was refreshed, the current access token is fine then.
+  if (authorization_header != oauth_->authorization_header()) return;
+
+  // The access token can expire before it is refreshed, for example while the system is suspended, so refresh it instead of clearing the session, which would lose the refresh token too.
+  // The session is cleared when refreshing fails because the refresh token is no longer valid.
+  if (!oauth_->RefreshAccessToken()) {
+    oauth_->ClearSession();
+  }
 
 }
 
@@ -479,8 +527,13 @@ void TidalService::SendSearch() {
       return;
   }
 
+  // The previous search request is deleted later, so disconnect it, otherwise its results can still arrive and end the new search.
+  if (search_request_) {
+    QObject::disconnect(&*search_request_, nullptr, this, nullptr);
+  }
   search_request_.reset(new TidalRequest(this, url_handler_, network_, query_type, this));
   QObject::connect(&*search_request_, &TidalRequest::Results, this, &TidalService::SearchResultsReceived);
+  QObject::connect(&*search_request_, &TidalRequest::SongsAvailable, this, &TidalService::SearchSongsAvailable);
   QObject::connect(&*search_request_, &TidalRequest::UpdateStatus, this, &TidalService::SearchUpdateStatus);
   QObject::connect(&*search_request_, &TidalRequest::UpdateProgress, this, &TidalService::SearchUpdateProgress);
 
@@ -492,7 +545,10 @@ void TidalService::SendSearch() {
 void TidalService::SearchResultsReceived(const int id, const SongMap &songs, const QString &error) {
 
   Q_EMIT SearchResults(id, songs, error);
-  search_request_.reset();
+  // Only the current search request is finished, not one started after these results.
+  if (id == search_id_) {
+    search_request_.reset();
+  }
 
 }
 

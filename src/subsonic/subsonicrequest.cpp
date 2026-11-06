@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2019-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,12 +38,14 @@
 #include <QJsonArray>
 #include <QJsonValue>
 
+#include "includes/shared_ptr.h"
 #include "core/logging.h"
 #include "core/song.h"
 #include "core/networkaccessmanager.h"
 #include "core/networktimeouts.h"
 #include "utilities/strutils.h"
 #include "utilities/imageutils.h"
+#include "utilities/coverutils.h"
 #include "constants/timeconstants.h"
 #include "subsonicservice.h"
 #include "subsonicurlhandler.h"
@@ -552,6 +554,10 @@ QString SubsonicRequest::ParseSong(Song &song, const QJsonObject &json_object, c
   QString genre;
   if (json_object.contains("genre"_L1)) genre = json_object["genre"_L1].toString();
 
+  // OpenSubsonic: musicBrainzId on a song is the MusicBrainz recording ID.
+  QString musicbrainz_recording_id;
+  if (json_object.contains("musicBrainzId"_L1)) musicbrainz_recording_id = json_object["musicBrainzId"_L1].toString();
+
   QString cover_id;
   if (use_album_id_for_album_covers() && !album_cover_id.isEmpty()) {
     cover_id = album_cover_id;
@@ -617,6 +623,7 @@ QString SubsonicRequest::ParseSong(Song &song, const QJsonObject &json_object, c
   song.set_length_nanosec(duration);
   if (cover_url.isValid()) song.set_art_automatic(cover_url);
   song.set_genre(genre);
+  if (!musicbrainz_recording_id.isEmpty()) song.set_musicbrainz_recording_id(musicbrainz_recording_id);
   song.set_directory_id(0);
   song.set_filetype(filetype);
   song.set_filesize(size);
@@ -673,7 +680,8 @@ void SubsonicRequest::AddAlbumCoverRequest(const Song &song) {
   request.album_id = song.album_id();
   request.cover_id = cover_id;
   request.url = cover_url;
-  request.filename = cover_path + QLatin1Char('/') + cover_id + ".jpg"_L1;
+  // The cover ID comes from the server.
+  request.filename = cover_path + QLatin1Char('/') + CoverUtils::FilenameFromId(cover_id) + ".jpg"_L1;
   if (request.filename.isEmpty()) return;
 
   album_covers_requests_sent_.insert(cover_id, song.song_id());
@@ -736,14 +744,14 @@ void SubsonicRequest::AlbumCoverReceived(QNetworkReply *reply, const AlbumCoverR
   }
 
   if (reply->error() != QNetworkReply::NoError) {
-    Error(QStringLiteral("%1 (%2) for %3").arg(reply->errorString()).arg(reply->error()).arg(request.url.toString()));
+    Warn(QStringLiteral("%1 (%2) for %3").arg(Utilities::RedactUrls(reply->errorString()), QString::number(reply->error()), Utilities::UrlForLog(request.url)));
     if (album_covers_requests_sent_.contains(request.cover_id)) album_covers_requests_sent_.remove(request.cover_id);
     AlbumCoverFinishCheck();
     return;
   }
 
   if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
-    Error(QStringLiteral("Received HTTP code %1 for %2.").arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()).arg(request.url.toString()));
+    Warn(QStringLiteral("Received HTTP code %1 for %2.").arg(QString::number(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()), Utilities::UrlForLog(request.url)));
     if (album_covers_requests_sent_.contains(request.cover_id)) album_covers_requests_sent_.remove(request.cover_id);
     AlbumCoverFinishCheck();
     return;
@@ -754,7 +762,7 @@ void SubsonicRequest::AlbumCoverReceived(QNetworkReply *reply, const AlbumCoverR
     mimetype = mimetype.left(mimetype.indexOf(u';'));
   }
   if (!ImageUtils::SupportedImageMimeTypes().contains(mimetype, Qt::CaseInsensitive) && !ImageUtils::SupportedImageFormats().contains(mimetype, Qt::CaseInsensitive)) {
-    Error(QStringLiteral("Unsupported mimetype for image reader %1 for %2").arg(mimetype, request.url.toString()));
+    Warn(QStringLiteral("Unsupported mimetype for image reader %1 for %2").arg(mimetype, Utilities::UrlForLog(request.url)));
     if (album_covers_requests_sent_.contains(request.cover_id)) album_covers_requests_sent_.remove(request.cover_id);
     AlbumCoverFinishCheck();
     return;
@@ -762,7 +770,7 @@ void SubsonicRequest::AlbumCoverReceived(QNetworkReply *reply, const AlbumCoverR
 
   const QByteArray data = reply->readAll();
   if (data.isEmpty()) {
-    Error(QStringLiteral("Received empty image data for %1").arg(request.url.toString()));
+    Warn(QStringLiteral("Received empty image data for %1").arg(Utilities::UrlForLog(request.url)));
     if (album_covers_requests_sent_.contains(request.cover_id)) album_covers_requests_sent_.remove(request.cover_id);
     AlbumCoverFinishCheck();
     return;
@@ -785,12 +793,12 @@ void SubsonicRequest::AlbumCoverReceived(QNetworkReply *reply, const AlbumCoverR
       }
     }
     else {
-      Error(QStringLiteral("Error saving image data to %1.").arg(request.filename));
+      Warn(QStringLiteral("Error saving image data to %1.").arg(request.filename));
       if (album_covers_requests_sent_.contains(request.cover_id)) album_covers_requests_sent_.remove(request.cover_id);
     }
   }
   else {
-    Error(QStringLiteral("Error decoding image data from %1.").arg(request.url.toString()));
+    Warn(QStringLiteral("Error decoding image data from %1.").arg(Utilities::UrlForLog(request.url)));
     if (album_covers_requests_sent_.contains(request.cover_id)) album_covers_requests_sent_.remove(request.cover_id);
   }
 
@@ -850,7 +858,7 @@ void SubsonicRequest::Error(const QString &error, const QVariant &debug) {
 
 void SubsonicRequest::Warn(const QString &error, const QVariant &debug) {
 
-  qLog(Error) << "Subsonic:" << error;
+  qLog(Warning) << "Subsonic:" << error;
   if (debug.isValid()) qLog(Debug) << debug;
 
 }

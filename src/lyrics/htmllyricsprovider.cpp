@@ -40,7 +40,7 @@
 using namespace Qt::Literals::StringLiterals;
 
 HtmlLyricsProvider::HtmlLyricsProvider(const QString &name, const bool enabled, const QString &start_tag, const QString &end_tag, const QString &lyrics_start, const bool multiple, const SharedPtr<NetworkAccessManager> network, QObject *parent)
-    : LyricsProvider(name, enabled, false, network, parent),
+    : LyricsProvider(name, enabled, false, false, network, parent),
       start_tag_(start_tag),
       end_tag_(end_tag),
       lyrics_start_(lyrics_start),
@@ -57,7 +57,7 @@ void HtmlLyricsProvider::StartSearch(const int id, const LyricsSearchRequest &re
   }
 
   const QUrl url = Url(request);
-  QNetworkReply *reply = CreateGetRequest(url, true);
+  QNetworkReply *reply = CreateGetRequest(url, UseFakeUserAgent());
   QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, id, request]() { HandleLyricsReply(reply, id, request); });
 
   qLog(Debug) << name_ << "Sending request for" << url;
@@ -147,7 +147,14 @@ QString HtmlLyricsProvider::ParseLyricsFromHTML(const QString &content, const QR
           start_idx = rematch_end_tag.capturedEnd();
         }
       }
+      else {
+        // There are more start tags, but no end tags left, so the lyrics are never closed, and idx would not move forward.
+        break;
+      }
     } while (tags > 0 && (rematch_start_tag.hasMatch() || rematch_end_tag.hasMatch()));
+
+    // Without an end tag, start_idx is not moved forward, so searching again would find the same lyrics forever.
+    if (end_lyrics_idx == -1) break;
 
     if (end_lyrics_idx != -1 && start_lyrics_idx < end_lyrics_idx) {
       if (!lyrics.isEmpty()) {

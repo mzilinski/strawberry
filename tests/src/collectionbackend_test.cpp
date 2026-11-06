@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2019, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,7 +24,12 @@
 #include "gtest_include.h"
 
 #include <QFileInfo>
+#include <QSet>
 #include <QSignalSpy>
+#include <QUrl>
+#include <QStringList>
+#include <QSqlQuery>
+#include <QSqlDatabase>
 #include <QThread>
 #include <QtDebug>
 
@@ -35,7 +40,7 @@
 #include "core/memorydatabase.h"
 #include "constants/timeconstants.h"
 #include "collection/collectionbackend.h"
-#include "collection/collectionlibrary.h"
+#include "collection/collectionmanager.h"
 
 using namespace Qt::Literals::StringLiterals;
 using std::make_unique;
@@ -50,7 +55,7 @@ class CollectionBackendTest : public ::testing::Test {
   void SetUp() override {
     database_ = make_shared<MemoryDatabase>(nullptr);
     backend_ = make_unique<CollectionBackend>();
-    backend_->Init(database_, nullptr, Song::Source::Collection, QLatin1String(CollectionLibrary::kSongsTable), QLatin1String(CollectionLibrary::kDirsTable), QLatin1String(CollectionLibrary::kSubdirsTable));
+    backend_->Init(database_, nullptr, Song::Source::Collection, QLatin1String(CollectionManager::kSongsTable), QLatin1String(CollectionManager::kDirsTable), QLatin1String(CollectionManager::kSubdirsTable));
   }
 
   static Song MakeDummySong(int directory_id) {
@@ -117,7 +122,100 @@ TEST_F(CollectionBackendTest, RemoveDirectory) {
 
 TEST_F(CollectionBackendTest, GetAlbumArtNonExistent) {}
 
+// A song which can't be added is skipped, the other songs of the batch are still added.
+TEST_F(CollectionBackendTest, AddOrUpdateSongsSkipsFailedSong) {
+
+  backend_->AddDirectory(u"/tmp"_s);
+
+  // Make the database reject one of the songs.
+  {
+    QSqlDatabase db(database_->Connect());
+    QSqlQuery q(db);
+    ASSERT_TRUE(q.exec(QStringLiteral("CREATE TRIGGER reject_bad_song BEFORE INSERT ON %1 WHEN NEW.title = 'Bad' BEGIN SELECT RAISE(ABORT, 'Rejected'); END").arg(QLatin1String(CollectionManager::kSongsTable))));
+  }
+
+  SongList songs;
+  for (const QString &title : QStringList{u"First"_s, u"Bad"_s, u"Last"_s}) {
+    Song song = MakeDummySong(1);
+    song.set_title(title);
+    song.set_url(QUrl::fromLocalFile(u"/tmp/"_s + title + u".flac"_s));
+    songs << song;
+  }
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsAdded);
+  backend_->AddOrUpdateSongs(songs);
+
+  QStringList titles;
+  const SongList all_songs = backend_->GetAllSongs();
+  for (const Song &song : all_songs) {
+    titles << song.title();
+  }
+  titles.sort();
+  EXPECT_EQ(QStringList() << u"First"_s << u"Last"_s, titles);
+
+  ASSERT_EQ(1, spy.count());
+  EXPECT_EQ(2, spy[0][0].value<SongList>().count());
+
+}
+
+// When a failure ends the whole transaction, like when the disk is full, the songs before it were not saved, so none are reported as added, and the songs after it are not saved outside of the transaction.
+TEST_F(CollectionBackendTest, AddOrUpdateSongsStopsWhenTransactionEnded) {
+
+  backend_->AddDirectory(u"/tmp"_s);
+
+  // Make the database roll back the transaction for one of the songs.
+  {
+    QSqlDatabase db(database_->Connect());
+    QSqlQuery q(db);
+    ASSERT_TRUE(q.exec(QStringLiteral("CREATE TRIGGER rollback_bad_song BEFORE INSERT ON %1 WHEN NEW.title = 'Bad' BEGIN SELECT RAISE(ROLLBACK, 'Rolled back'); END").arg(QLatin1String(CollectionManager::kSongsTable))));
+  }
+
+  SongList songs;
+  for (const QString &title : QStringList{u"First"_s, u"Bad"_s, u"Last"_s}) {
+    Song song = MakeDummySong(1);
+    song.set_title(title);
+    song.set_url(QUrl::fromLocalFile(u"/tmp/"_s + title + u".flac"_s));
+    songs << song;
+  }
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsAdded);
+  backend_->AddOrUpdateSongs(songs);
+
+  EXPECT_TRUE(backend_->GetAllSongs().isEmpty());
+  EXPECT_EQ(0, spy.count());
+
+}
+
 // Test adding a single song to the database, then getting various information back about it.
+// Regression test: when some of the songs of a streaming service could not be fetched, the songs missing from the results were deleted.
+TEST_F(CollectionBackendTest, UpdateSongsBySongIDKeepsMissingSongs) {
+
+  SongMap songs;
+  for (const QString &title : QStringList{u"First"_s, u"Second"_s, u"Third"_s}) {
+    Song song(Song::Source::Tidal);
+    song.set_song_id(title);
+    song.set_title(title);
+    song.set_url(QUrl(u"tidal:"_s + title));
+    song.set_directory_id(0);
+    songs.insert(song.song_id(), song);
+  }
+  backend_->UpdateSongsBySongID(songs);
+  ASSERT_EQ(3, backend_->GetAllSongs().count());
+
+  // Only the first song was fetched, the others are kept.
+  SongMap fetched_songs;
+  fetched_songs.insert(u"First"_s, songs.value(u"First"_s));
+  backend_->UpdateSongsBySongID(fetched_songs, false);
+  EXPECT_EQ(3, backend_->GetAllSongs().count());
+
+  // All songs were fetched, the songs no longer there are deleted.
+  backend_->UpdateSongsBySongID(fetched_songs);
+  const SongList all_songs = backend_->GetAllSongs();
+  ASSERT_EQ(1, all_songs.count());
+  EXPECT_EQ(u"First"_s, all_songs.first().song_id());
+
+}
+
 class SingleSong : public CollectionBackendTest {
  protected:
   void SetUp() override {
@@ -242,6 +340,217 @@ TEST_F(SingleSong, GetSongById) {
   EXPECT_EQ(song_.artist(), song.artist());
   EXPECT_EQ(song_.title(), song.title());
   EXPECT_EQ(1, song.id());
+
+}
+
+// Regression test: deleting and unsetting a cover removes the embedded cover after the cover is unset, which reset art_unset, so the cover was detected or fetched again.
+TEST_F(SingleSong, UpdateEmbeddedAlbumArtKeepsArtUnset) {
+
+  song_.set_art_embedded(true);
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  backend_->UnsetAlbumArt(song_.effective_albumartist(), song_.album());
+  backend_->UpdateEmbeddedAlbumArt(song_.effective_albumartist(), song_.album(), false);
+  Song song = backend_->GetSongById(1);
+  EXPECT_FALSE(song.art_embedded());
+  EXPECT_TRUE(song.art_unset());
+
+  // Embedding a cover sets the cover again.
+  backend_->UpdateEmbeddedAlbumArt(song_.effective_albumartist(), song_.album(), true);
+  song = backend_->GetSongById(1);
+  EXPECT_TRUE(song.art_embedded());
+  EXPECT_FALSE(song.art_unset());
+
+}
+
+// Lyrics found automatically are saved with UpdateSongLyrics(), and their storage type is changed with UpdateSongLyricsStorageType() once they are written to the tags.
+
+TEST_F(SingleSong, UpdateSongLyrics) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyrics(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Database), false, true);
+
+  // Only the lyrics are to be saved to the tags, not the synchronized lyrics.
+  ASSERT_EQ(1, spy.count());
+  const SongList songs = *(reinterpret_cast<SongList*>(spy[0][0].data()));
+  ASSERT_EQ(1, songs.count());
+  EXPECT_EQ(u"strawberry lyrics"_s, songs[0].lyrics());
+  EXPECT_TRUE(spy[0][1].toBool());
+  EXPECT_FALSE(spy[0][2].toBool());
+
+  const Song song = backend_->GetSongById(1);
+  EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+  EXPECT_EQ(Song::StorageType::Database, song.lyrics_storage_type());
+  EXPECT_TRUE(song.synced_lyrics().isEmpty());
+  EXPECT_EQ(Song::StorageType::None, song.synced_lyrics_storage_type());
+  // Other columns are not changed.
+  EXPECT_EQ(song_.title(), song.title());
+
+}
+
+TEST_F(SingleSong, UpdateSongSyncedLyrics) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  backend_->UpdateSongLyrics(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Tag), false, false);
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyrics(1, true, u"[00:01.00]Line one"_s, static_cast<int>(Song::StorageType::Database), false, true);
+
+  // Only the synchronized lyrics are to be saved to the tags.
+  ASSERT_EQ(1, spy.count());
+  EXPECT_FALSE(spy[0][1].toBool());
+  EXPECT_TRUE(spy[0][2].toBool());
+
+  // The lyrics are not changed.
+  const Song song = backend_->GetSongById(1);
+  EXPECT_EQ(u"[00:01.00]Line one"_s, song.synced_lyrics());
+  EXPECT_EQ(Song::StorageType::Database, song.synced_lyrics_storage_type());
+  EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+  EXPECT_EQ(Song::StorageType::Tag, song.lyrics_storage_type());
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsNotSavingTags) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyrics(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Database), false, false);
+
+  ASSERT_EQ(1, spy.count());
+  EXPECT_FALSE(spy[0][1].toBool());
+  EXPECT_FALSE(spy[0][2].toBool());
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsOnlyIfEmpty) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  backend_->UpdateSongLyrics(1, false, u"existing lyrics"_s, static_cast<int>(Song::StorageType::Tag), false, false);
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  // Lyrics added in the meantime are not replaced by lyrics found automatically.
+  backend_->UpdateSongLyrics(1, false, u"fetched lyrics"_s, static_cast<int>(Song::StorageType::Database), true, true);
+  EXPECT_EQ(0, spy.count());
+  {
+    const Song song = backend_->GetSongById(1);
+    EXPECT_EQ(u"existing lyrics"_s, song.lyrics());
+    EXPECT_EQ(Song::StorageType::Tag, song.lyrics_storage_type());
+  }
+
+  // The synchronized lyrics are still empty, so they are set.
+  backend_->UpdateSongLyrics(1, true, u"[00:01.00]Line one"_s, static_cast<int>(Song::StorageType::Database), true, true);
+  EXPECT_EQ(1, spy.count());
+  {
+    const Song song = backend_->GetSongById(1);
+    EXPECT_EQ(u"[00:01.00]Line one"_s, song.synced_lyrics());
+    EXPECT_EQ(Song::StorageType::Database, song.synced_lyrics_storage_type());
+  }
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsOnlyIfEmptyCleared) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  // Empty lyrics stored in the database are lyrics cleared on purpose.
+  backend_->UpdateSongLyrics(1, false, QString(), static_cast<int>(Song::StorageType::Database), false, false);
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyrics(1, false, u"fetched lyrics"_s, static_cast<int>(Song::StorageType::Database), true, true);
+  EXPECT_EQ(0, spy.count());
+
+  const Song song = backend_->GetSongById(1);
+  EXPECT_TRUE(song.lyrics().isEmpty());
+  EXPECT_EQ(Song::StorageType::Database, song.lyrics_storage_type());
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsClear) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  backend_->UpdateSongLyrics(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Database), false, false);
+  backend_->UpdateSongLyrics(1, false, QString(), static_cast<int>(Song::StorageType::None), false, false);
+
+  const Song song = backend_->GetSongById(1);
+  EXPECT_TRUE(song.lyrics().isEmpty());
+  EXPECT_EQ(Song::StorageType::None, song.lyrics_storage_type());
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsStorageType) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  backend_->UpdateSongLyrics(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Database), false, false);
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyricsStorageType(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Database), static_cast<int>(Song::StorageType::Tag));
+
+  // Nothing more is saved to the tags after changing the storage type.
+  ASSERT_EQ(1, spy.count());
+  EXPECT_FALSE(spy[0][1].toBool());
+  EXPECT_FALSE(spy[0][2].toBool());
+
+  const Song song = backend_->GetSongById(1);
+  EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+  EXPECT_EQ(Song::StorageType::Tag, song.lyrics_storage_type());
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsStorageTypeChangedLyrics) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  // The lyrics were changed while they were being written to the tags.
+  backend_->UpdateSongLyrics(1, false, u"newer lyrics"_s, static_cast<int>(Song::StorageType::Database), false, false);
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyricsStorageType(1, false, u"strawberry lyrics"_s, static_cast<int>(Song::StorageType::Database), static_cast<int>(Song::StorageType::Tag));
+  EXPECT_EQ(0, spy.count());
+
+  const Song song = backend_->GetSongById(1);
+  EXPECT_EQ(u"newer lyrics"_s, song.lyrics());
+  EXPECT_EQ(Song::StorageType::Database, song.lyrics_storage_type());
+
+}
+
+TEST_F(SingleSong, UpdateSongLyricsStorageTypeChangedStorageType) {
+
+  AddDummySong();
+  if (HasFatalFailure()) return;
+
+  // The same synchronized lyrics were saved to an LRC file while they were being written to the tags.
+  backend_->UpdateSongLyrics(1, true, u"[00:01.00]Line one"_s, static_cast<int>(Song::StorageType::File), false, false);
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsLyricsChanged);
+
+  backend_->UpdateSongLyricsStorageType(1, true, u"[00:01.00]Line one"_s, static_cast<int>(Song::StorageType::Database), static_cast<int>(Song::StorageType::Tag));
+  EXPECT_EQ(0, spy.count());
+
+  const Song song = backend_->GetSongById(1);
+  EXPECT_EQ(Song::StorageType::File, song.synced_lyrics_storage_type());
 
 }
 
@@ -467,6 +776,113 @@ TEST_F(CollectionBackendTest, SameUrlDifferentBeginningKeptSeparate) {
 
 }
 
+// Two songs with the same artist and title in different files, both matched by the play statistics updates.
+class PlayStatistics : public CollectionBackendTest {
+ protected:
+  void SetUp() override {
+    CollectionBackendTest::SetUp();
+    backend_->AddDirectory(u"/tmp"_s);
+
+    Song song1 = MakeDummySong(1);
+    song1.set_artist(u"Artist"_s);
+    song1.set_album(u"Album"_s);
+    song1.set_title(u"Title"_s);
+    song1.set_url(QUrl::fromLocalFile(u"/tmp/song1.flac"_s));
+    song1.set_playcount(3);
+    song1.set_lastplayed(100);
+
+    Song song2 = MakeDummySong(1);
+    song2.set_artist(u"Artist"_s);
+    song2.set_album(u"Album"_s);
+    song2.set_title(u"Title"_s);
+    song2.set_url(QUrl::fromLocalFile(u"/tmp/song2.flac"_s));
+    song2.set_playcount(5);
+    song2.set_lastplayed(300);
+
+    backend_->AddOrUpdateSongs(SongList() << song1 << song2);
+    ASSERT_EQ(2, backend_->GetAllSongs().count());
+  }
+};
+
+TEST_F(PlayStatistics, UpdatePlayCount) {
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsStatisticsChanged);
+
+  backend_->UpdatePlayCount(u"Artist"_s, u"Title"_s, 10, true);
+
+  const SongList songs = backend_->GetAllSongs();
+  ASSERT_EQ(2, songs.count());
+  for (const Song &song : songs) {
+    EXPECT_EQ(10U, song.playcount());
+  }
+
+  // The emitted songs must have the new playcount, since it is what gets saved to the tags.
+  ASSERT_EQ(1, spy.count());
+  const SongList emitted_songs = spy[0][0].value<SongList>();
+  ASSERT_EQ(2, emitted_songs.count());
+  for (const Song &song : emitted_songs) {
+    EXPECT_EQ(10U, song.playcount());
+  }
+  EXPECT_TRUE(spy[0][1].toBool());
+
+}
+
+TEST_F(PlayStatistics, UpdatePlayCountUnchanged) {
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsStatisticsChanged);
+
+  backend_->UpdatePlayCount(u"Artist"_s, u"Title"_s, 5, true);
+
+  const Song song1 = backend_->GetSongByUrl(QUrl::fromLocalFile(u"/tmp/song1.flac"_s));
+  const Song song2 = backend_->GetSongByUrl(QUrl::fromLocalFile(u"/tmp/song2.flac"_s));
+  EXPECT_EQ(5U, song1.playcount());
+  EXPECT_EQ(5U, song2.playcount());
+
+  // The song that already had the playcount is not emitted, so its tags are not saved again.
+  ASSERT_EQ(1, spy.count());
+  const SongList emitted_songs = spy[0][0].value<SongList>();
+  ASSERT_EQ(1, emitted_songs.count());
+  EXPECT_EQ(song1.id(), emitted_songs[0].id());
+
+  // Nothing is emitted when all the songs already have the playcount.
+  backend_->UpdatePlayCount(u"Artist"_s, u"Title"_s, 5, true);
+  EXPECT_EQ(1, spy.count());
+
+}
+
+TEST_F(PlayStatistics, UpdateLastPlayed) {
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsStatisticsChanged);
+
+  backend_->UpdateLastPlayed(u"Artist"_s, u"Album"_s, u"Title"_s, 200);
+
+  // Only the song played before is updated, the newer last played time is kept.
+  const Song song1 = backend_->GetSongByUrl(QUrl::fromLocalFile(u"/tmp/song1.flac"_s));
+  const Song song2 = backend_->GetSongByUrl(QUrl::fromLocalFile(u"/tmp/song2.flac"_s));
+  EXPECT_EQ(200, song1.lastplayed());
+  EXPECT_EQ(300, song2.lastplayed());
+
+  // Only the updated song is emitted, with the new last played time.
+  ASSERT_EQ(1, spy.count());
+  const SongList emitted_songs = spy[0][0].value<SongList>();
+  ASSERT_EQ(1, emitted_songs.count());
+  EXPECT_EQ(song1.id(), emitted_songs[0].id());
+  EXPECT_EQ(200, emitted_songs[0].lastplayed());
+
+}
+
+TEST_F(PlayStatistics, UpdateLastPlayedNotNewer) {
+
+  QSignalSpy spy(&*backend_, &CollectionBackend::SongsStatisticsChanged);
+
+  backend_->UpdateLastPlayed(u"Artist"_s, u"Album"_s, u"Title"_s, 50);
+
+  EXPECT_EQ(100, backend_->GetSongByUrl(QUrl::fromLocalFile(u"/tmp/song1.flac"_s)).lastplayed());
+  EXPECT_EQ(300, backend_->GetSongByUrl(QUrl::fromLocalFile(u"/tmp/song2.flac"_s)).lastplayed());
+  EXPECT_EQ(0, spy.count());
+
+}
+
 class TestUrls : public CollectionBackendTest {
  protected:
   void SetUp() override {
@@ -534,7 +950,7 @@ TEST_F(TestUrls, TestUrls) {
 
     QSqlDatabase db(database_->Connect());
     QSqlQuery q(db);
-    q.prepare(QStringLiteral("SELECT url FROM %1 WHERE url = :url").arg(QLatin1String(CollectionLibrary::kSongsTable)));
+    q.prepare(QStringLiteral("SELECT url FROM %1 WHERE url = :url").arg(QLatin1String(CollectionManager::kSongsTable)));
 
     q.bindValue(u":url"_s, url.toString(QUrl::FullyEncoded));
     EXPECT_TRUE(q.exec());
@@ -612,7 +1028,7 @@ TEST_F(UpdateSongsBySongID, UpdateSongsBySongID) {
     SongMap songs;
     {
       QSqlDatabase db(database_->Connect());
-      CollectionQuery query(db, QLatin1String(CollectionLibrary::kSongsTable));
+      CollectionQuery query(db, QLatin1String(CollectionManager::kSongsTable));
       EXPECT_TRUE(backend_->ExecCollectionQuery(&query, songs));
     }
 
@@ -789,6 +1205,131 @@ TEST_F(ChangeDirPath, RewritesSubdirectoryPaths) {
     ASSERT_EQ(1, subdirs.count());
     EXPECT_EQ(u"/mnt/newmusic/album"_s, subdirs[0].path);
   }
+
+}
+
+// Regression test: renaming a directory whose path has characters outside the Basic Multilingual Plane must not cut characters off the subdirectory paths.
+// SQLite counts these as one character, while QString counts two UTF-16 code units.
+TEST_F(CollectionBackendTest, ChangeDirPathWithNonBmpCharacters) {
+
+  const QString old_path = u"/mnt/\U0001F3B5music"_s;
+  backend_->AddDirectory(old_path);  // Gets directory ID 1.
+
+  CollectionSubdirectory subdir;
+  subdir.directory_id = 1;
+  subdir.path = old_path + u"/album"_s;
+  subdir.mtime = 1;
+  backend_->AddOrUpdateSubdirs(CollectionSubdirectoryList() << subdir);
+
+  Song song = MakeDummySong(1);
+  song.set_url(QUrl::fromLocalFile(old_path + u"/album/song.flac"_s));
+  backend_->AddOrUpdateSongs(SongList() << song);
+
+  backend_->ChangeDirPath(1, old_path, u"/mnt/newmusic"_s);
+
+  const CollectionSubdirectoryList subdirs = backend_->SubdirsInDirectory(1);
+  ASSERT_EQ(1, subdirs.count());
+  EXPECT_EQ(u"/mnt/newmusic/album"_s, subdirs[0].path);
+
+  const SongList songs = backend_->FindSongsInDirectory(1);
+  ASSERT_EQ(1, songs.count());
+  EXPECT_EQ(QUrl::fromLocalFile(u"/mnt/newmusic/album/song.flac"_s), songs[0].url());
+
+}
+
+// Songs in several directories are added and updated in one call, songs in a directory that doesn't exist and songs with an ID that doesn't exist are skipped.
+TEST_F(CollectionBackendTest, AddOrUpdateSongsInSeveralDirectories) {
+
+  backend_->AddDirectory(u"/tmp/a"_s);
+  backend_->AddDirectory(u"/tmp/b"_s);
+
+  Song song_a1 = MakeDummySong(1);
+  song_a1.set_url(QUrl::fromLocalFile(u"/tmp/a/1.flac"_s));
+  song_a1.set_title(u"A1"_s);
+  Song song_a2 = MakeDummySong(1);
+  song_a2.set_url(QUrl::fromLocalFile(u"/tmp/a/2.flac"_s));
+  song_a2.set_title(u"A2"_s);
+  Song song_b1 = MakeDummySong(2);
+  song_b1.set_url(QUrl::fromLocalFile(u"/tmp/b/1.flac"_s));
+  song_b1.set_title(u"B1"_s);
+  Song song_missing_directory = MakeDummySong(99);
+  song_missing_directory.set_url(QUrl::fromLocalFile(u"/tmp/c/1.flac"_s));
+  song_missing_directory.set_title(u"C1"_s);
+
+  QSignalSpy added_spy(&*backend_, &CollectionBackend::SongsAdded);
+  backend_->AddOrUpdateSongs(SongList() << song_a1 << song_missing_directory << song_a2 << song_b1);
+
+  ASSERT_EQ(1, added_spy.size());
+  SongList added_songs = *(reinterpret_cast<SongList*>(added_spy[0][0].data()));
+  ASSERT_EQ(3, added_songs.size());
+  EXPECT_EQ(u"A1"_s, added_songs[0].title());
+  EXPECT_EQ(u"A2"_s, added_songs[1].title());
+  EXPECT_EQ(u"B1"_s, added_songs[2].title());
+  EXPECT_EQ(3, backend_->GetAllSongs().count());
+
+  // Update the added songs, and a song with an ID that doesn't exist.
+  SongList updated_songs;
+  for (Song song : added_songs) {
+    song.set_title(song.title() + u" updated"_s);
+    updated_songs << song;
+  }
+  Song song_missing_id = MakeDummySong(1);
+  song_missing_id.set_id(999);
+  song_missing_id.set_url(QUrl::fromLocalFile(u"/tmp/a/999.flac"_s));
+  updated_songs.insert(1, song_missing_id);
+
+  QSignalSpy added_spy2(&*backend_, &CollectionBackend::SongsAdded);
+  QSignalSpy changed_spy(&*backend_, &CollectionBackend::SongsChanged);
+  backend_->AddOrUpdateSongs(updated_songs);
+
+  EXPECT_EQ(0, added_spy2.size());
+  ASSERT_EQ(1, changed_spy.size());
+  const SongList changed_songs = *(reinterpret_cast<SongList*>(changed_spy[0][0].data()));
+  ASSERT_EQ(3, changed_songs.size());
+  EXPECT_EQ(u"A1 updated"_s, changed_songs[0].title());
+  EXPECT_EQ(u"A2 updated"_s, changed_songs[1].title());
+  EXPECT_EQ(u"B1 updated"_s, changed_songs[2].title());
+  EXPECT_EQ(3, backend_->GetAllSongs().count());
+  EXPECT_EQ(u"B1 updated"_s, backend_->GetSongById(added_songs[2].id()).title());
+
+}
+
+// Regression test: CUE sheet songs share the URL of the file, each of them must be marked as a compilation and reported changed once only.
+TEST_F(CollectionBackendTest, CompilationsNeedUpdatingSharedUrl) {
+
+  backend_->AddDirectory(u"/tmp"_s);
+
+  SongList songs;
+  for (int i = 0; i < 3; ++i) {
+    Song song = MakeDummySong(1);
+    song.set_url(QUrl::fromLocalFile(u"/tmp/album/image.flac"_s));
+    song.set_cue_path(u"/tmp/album/image.cue"_s);
+    song.set_beginning_nanosec(i * 60 * kNsecPerSec);
+    song.set_title(u"Track %1"_s.arg(i + 1));
+    song.set_artist(u"Artist %1"_s.arg(i + 1));
+    song.set_album(u"Album"_s);
+    songs << song;
+  }
+  backend_->AddOrUpdateSongs(songs);
+  ASSERT_EQ(3, backend_->GetAllSongs().count());
+
+  QSignalSpy changed_spy(&*backend_, &CollectionBackend::SongsChanged);
+  backend_->CompilationsNeedUpdating();
+
+  ASSERT_EQ(1, changed_spy.size());
+  const SongList changed_songs = *(reinterpret_cast<SongList*>(changed_spy[0][0].data()));
+  ASSERT_EQ(3, changed_songs.size());
+  QSet<int> ids;
+  for (const Song &song : changed_songs) {
+    EXPECT_TRUE(song.compilation_detected());
+    ids << song.id();
+  }
+  EXPECT_EQ(3, ids.size());
+
+  // The songs are marked already, so nothing changes the next time.
+  QSignalSpy changed_spy2(&*backend_, &CollectionBackend::SongsChanged);
+  backend_->CompilationsNeedUpdating();
+  EXPECT_EQ(0, changed_spy2.size());
 
 }
 

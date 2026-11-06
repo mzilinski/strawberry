@@ -1,6 +1,7 @@
 /*
  * Strawberry Music Player
  * Copyright 2022, Eoin O'Neill <eoinoneill1991@gmail.com>
+ * Copyright 2022-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -70,6 +71,7 @@ enum class xID6_TYPE {
 };
 
 TagReaderResult Read(const QFileInfo &fileinfo, Song *song);
+QString ReadFixedString(const QByteArray &data);
 qint16 GetNextMemAddressAlign32bit(qint16 input);
 quint64 ConvertSPCStringToNum(const QByteArray &arr);
 }  // namespace SPC
@@ -115,6 +117,8 @@ class TagReaderGME : public TagReaderBase {
 
   TagReaderResult SaveSongPlaycount(const QString &filename, const uint playcount) const override;
   TagReaderResult SaveSongRating(const QString &filename, const float rating) const override;
+  TagReaderResult SaveSongLyrics(const QString &filename, const QString &lyrics) const override;
+  TagReaderResult SaveSongSyncedLyrics(const QString &filename, const QString &synced_lyrics) const override;
 };
 
 #endif  // TAGREADERGME_H

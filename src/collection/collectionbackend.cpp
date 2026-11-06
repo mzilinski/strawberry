@@ -30,6 +30,7 @@
 #include <QThread>
 #include <QMutex>
 #include <QSet>
+#include <QHash>
 #include <QMap>
 #include <QList>
 #include <QVariant>
@@ -221,14 +222,16 @@ void CollectionBackend::ChangeDirPath(const int id, const QString &old_path, con
 
   // SQLite substr() is 1-indexed, so start one character past the old prefix to drop it.
   // The subdirectories table stores plain filesystem paths, while the songs table stores file:// URLs, so each needs its own prefix and offset.
-  const qint64 subdir_substr_start = old_path.length() + 1;
+  // The URLs are percent encoded, so their length is the same in SQLite and here.
   const qint64 song_substr_start = old_url.length() + 1;
 
   // Do the subdirs table (paths are plain filesystem paths)
   {
+    // SQLite counts the characters of the old path itself, it counts code points, while QString::length() counts UTF-16 code units, which differ for characters such as emoji.
     SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET path=:path || substr(path, %2) WHERE directory_id=:id").arg(subdirs_table_).arg(subdir_substr_start));
+    q.prepare(QStringLiteral("UPDATE %1 SET path=:path || substr(path, length(:old_path) + 1) WHERE directory_id=:id").arg(subdirs_table_));
     q.BindValue(u":path"_s, new_path);
+    q.BindValue(u":old_path"_s, old_path);
     q.BindValue(u":id"_s, id);
     if (!q.Exec()) {
       db_->ReportErrors(q);
@@ -538,43 +541,33 @@ void CollectionBackend::AddOrUpdateSubdirs(const CollectionSubdirectoryList &sub
   QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
 
+  // Prepare the queries once, and only bind the values for each subdirectory.
+  SqlQuery q_exists(db);
+  q_exists.prepare(QStringLiteral("SELECT ROWID FROM %1 WHERE directory_id = :id AND path = :path").arg(subdirs_table_));
+  SqlQuery q_update(db);
+  q_update.prepare(QStringLiteral("UPDATE %1 SET mtime = :mtime WHERE directory_id = :id AND path = :path").arg(subdirs_table_));
+  SqlQuery q_insert(db);
+  q_insert.prepare(QStringLiteral("INSERT INTO %1 (directory_id, path, mtime) VALUES (:id, :path, :mtime)").arg(subdirs_table_));
+
   ScopedTransaction transaction(&db);
   for (const CollectionSubdirectory &subdir : subdirs) {
     // See if this subdirectory already exists in the database
-    bool exists = false;
-    {
-      SqlQuery q(db);
-      q.prepare(QStringLiteral("SELECT ROWID FROM %1 WHERE directory_id = :id AND path = :path").arg(subdirs_table_));
-      q.BindValue(u":id"_s, subdir.directory_id);
-      q.BindValue(u":path"_s, subdir.path);
-      if (!q.Exec()) {
-        db_->ReportErrors(q);
-        return;
-      }
-      exists = q.next();
+    q_exists.BindValue(u":id"_s, subdir.directory_id);
+    q_exists.BindValue(u":path"_s, subdir.path);
+    if (!q_exists.Exec()) {
+      db_->ReportErrors(q_exists);
+      return;
     }
+    const bool exists = q_exists.next();
+    q_exists.finish();
 
-    if (exists) {
-      SqlQuery q(db);
-      q.prepare(QStringLiteral("UPDATE %1 SET mtime = :mtime WHERE directory_id = :id AND path = :path").arg(subdirs_table_));
-      q.BindValue(u":mtime"_s, subdir.mtime);
-      q.BindValue(u":id"_s, subdir.directory_id);
-      q.BindValue(u":path"_s, subdir.path);
-      if (!q.Exec()) {
-        db_->ReportErrors(q);
-        return;
-      }
-    }
-    else {
-      SqlQuery q(db);
-      q.prepare(QStringLiteral("INSERT INTO %1 (directory_id, path, mtime) VALUES (:id, :path, :mtime)").arg(subdirs_table_));
-      q.BindValue(u":id"_s, subdir.directory_id);
-      q.BindValue(u":path"_s, subdir.path);
-      q.BindValue(u":mtime"_s, subdir.mtime);
-      if (!q.Exec()) {
-        db_->ReportErrors(q);
-        return;
-      }
+    SqlQuery &q = exists ? q_update : q_insert;
+    q.BindValue(u":mtime"_s, subdir.mtime);
+    q.BindValue(u":id"_s, subdir.directory_id);
+    q.BindValue(u":path"_s, subdir.path);
+    if (!q.Exec()) {
+      db_->ReportErrors(q);
+      return;
     }
   }
 
@@ -587,10 +580,11 @@ void CollectionBackend::DeleteSubdirs(const CollectionSubdirectoryList &subdirs)
   QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
 
+  SqlQuery q(db);
+  q.prepare(QStringLiteral("DELETE FROM %1 WHERE directory_id = :id AND path = :path").arg(subdirs_table_));
+
   ScopedTransaction transaction(&db);
   for (const CollectionSubdirectory &subdir : subdirs) {
-    SqlQuery q(db);
-    q.prepare(QStringLiteral("DELETE FROM %1 WHERE directory_id = :id AND path = :path").arg(subdirs_table_));
     q.BindValue(u":id"_s, subdir.directory_id);
     q.BindValue(u":path"_s, subdir.path);
     if (!q.Exec()) {
@@ -640,39 +634,74 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
   SongList added_songs;
   SongList changed_songs;
 
+  // Prepare the queries once, and only bind the values for each song.
+  SqlQuery q_check_dir(db);
+  if (!dirs_table_.isEmpty()) {
+    q_check_dir.prepare(QStringLiteral("SELECT ROWID FROM %1 WHERE ROWID = :id").arg(dirs_table_));
+  }
+  SqlQuery q_song_exists(db);
+  q_song_exists.prepare(QStringLiteral("SELECT ROWID FROM %1 WHERE ROWID = :id").arg(songs_table_));
+  SqlQuery q_find_url(db);
+  // The CUE sheet is matched too, the media file of a CUE sheet can also have a song for the whole media file, for example while the CUE sheet can't be read, which starts at the same position as the first CUE song.
+  q_find_url.prepare(QStringLiteral("SELECT %1 FROM %2 WHERE (url = :url1 OR url = :url2 OR url = :url3 OR url = :url4) AND beginning = :beginning AND IFNULL(cue_path, '') = :cue_path ORDER BY unavailable ASC LIMIT 1").arg(Song::kRowIdColumnSpec, songs_table_));
+  SqlQuery q_update(db);
+  q_update.prepare(QStringLiteral("UPDATE %1 SET %2 WHERE ROWID = :id").arg(songs_table_, Song::kUpdateSpec));
+  SqlQuery q_insert(db);
+  q_insert.prepare(QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)").arg(songs_table_, Song::kColumnSpec, Song::kBindSpec));
+
+  // Songs are usually added in batches from the same directory, so remember which directories exist.
+  QHash<int, bool> directory_exists;
+
+  const auto update_song = [this, &q_update](const Song &song_to_update) {
+    song_to_update.BindToQuery(&q_update);
+    q_update.BindValue(u":id"_s, song_to_update.id());
+    if (!q_update.Exec()) {
+      db_->ReportErrors(q_update);
+      return false;
+    }
+    return true;
+  };
+
+  // A query failing for one song only skips that song, otherwise the transaction is rolled back, and all the songs of the batch are lost.
+  // SQLite normally only rolls back the failed statement, but for some errors, like when the disk is full, it rolls back the transaction, then stop, the songs before it were not saved.
   for (const Song &song : songs) {
 
     // Do a sanity check first - make sure the song's directory still exists
     // This is to fix a possible race condition when a directory is removed while CollectionWatcher is scanning it.
     if (!dirs_table_.isEmpty()) {
-      SqlQuery check_dir(db);
-      check_dir.prepare(QStringLiteral("SELECT ROWID FROM %1 WHERE ROWID = :id").arg(dirs_table_));
-      check_dir.BindValue(u":id"_s, song.directory_id());
-      if (!check_dir.Exec()) {
-        db_->ReportErrors(check_dir);
-        return;
+      QHash<int, bool>::const_iterator directory_it = directory_exists.constFind(song.directory_id());
+      if (directory_it == directory_exists.constEnd()) {
+        q_check_dir.BindValue(u":id"_s, song.directory_id());
+        if (!q_check_dir.Exec()) {
+          db_->ReportErrors(q_check_dir);
+          if (!transaction.active()) return;
+          continue;
+        }
+        directory_it = directory_exists.insert(song.directory_id(), q_check_dir.next());
+        q_check_dir.finish();
       }
 
-      if (!check_dir.next()) continue;
+      if (!directory_it.value()) continue;
 
     }
 
     if (song.id() != -1) {  // This song exists in the DB.
 
-      // Get the previous song data first
-      Song old_song(GetSongById(song.id()));
-      if (!old_song.is_valid()) continue;
+      // Make sure it still exists
+      q_song_exists.BindValue(u":id"_s, song.id());
+      if (!q_song_exists.Exec()) {
+        db_->ReportErrors(q_song_exists);
+        if (!transaction.active()) return;
+        continue;
+      }
+      const bool song_exists = q_song_exists.next();
+      q_song_exists.finish();
+      if (!song_exists) continue;
 
       // Update
-      {
-        SqlQuery q(db);
-        q.prepare(QStringLiteral("UPDATE %1 SET %2 WHERE ROWID = :id").arg(songs_table_, Song::kUpdateSpec));
-        song.BindToQuery(&q);
-        q.BindValue(u":id"_s, song.id());
-        if (!q.Exec()) {
-          db_->ReportErrors(q);
-          return;
-        }
+      if (!update_song(song)) {
+        if (!transaction.active()) return;
+        continue;
       }
 
       changed_songs << song;
@@ -683,7 +712,7 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
     else if (!song.song_id().isEmpty()) {  // Song has a unique id, check if the song exists.
 
       // Get the previous song data first
-      Song old_song(GetSongBySongId(song.song_id()));
+      Song old_song(GetSongBySongId(song.song_id(), db));
 
       if (old_song.is_valid() && old_song.id() != -1) {
 
@@ -691,15 +720,9 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
         new_song.set_id(old_song.id());
 
         // Update
-        {
-          SqlQuery q(db);
-          q.prepare(QStringLiteral("UPDATE %1 SET %2 WHERE ROWID = :id").arg(songs_table_, Song::kUpdateSpec));
-          new_song.BindToQuery(&q);
-          q.BindValue(u":id"_s, new_song.id());
-          if (!q.Exec()) {
-            db_->ReportErrors(q);
-            return;
-          }
+        if (!update_song(new_song)) {
+          if (!transaction.active()) return;
+          continue;
         }
 
         changed_songs << new_song;
@@ -714,34 +737,30 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
       // and there is no UNIQUE(url) constraint to catch it.
       // Match by url and beginning (so distinct CUE tracks sharing one file are kept apart) and include unavailable rows, so a returning file restores its existing row instead of being duplicated.
       Song existing_song(source_);
-      {
-        SqlQuery q(db);
-        q.prepare(QStringLiteral("SELECT %1 FROM %2 WHERE (url = :url1 OR url = :url2 OR url = :url3 OR url = :url4) AND beginning = :beginning ORDER BY unavailable ASC LIMIT 1").arg(Song::kRowIdColumnSpec, songs_table_));
-        q.BindValue(u":url1"_s, song.url().toString());
-        q.BindValue(u":url2"_s, song.url().toString(QUrl::FullyEncoded));
-        q.BindValue(u":url3"_s, song.url().toEncoded(QUrl::FullyDecoded));
-        q.BindValue(u":url4"_s, song.url().toEncoded(QUrl::FullyEncoded));
-        q.BindValue(u":beginning"_s, song.beginning_nanosec());
-        if (!q.Exec()) {
-          db_->ReportErrors(q);
-          return;
-        }
-        if (q.next()) {
-          existing_song.InitFromQuery(q, true);
-        }
+      q_find_url.BindValue(u":url1"_s, song.url().toString());
+      q_find_url.BindValue(u":url2"_s, song.url().toString(QUrl::FullyEncoded));
+      q_find_url.BindValue(u":url3"_s, song.url().toEncoded(QUrl::FullyDecoded));
+      q_find_url.BindValue(u":url4"_s, song.url().toEncoded(QUrl::FullyEncoded));
+      q_find_url.BindValue(u":beginning"_s, song.beginning_nanosec());
+      // Not a null string, which would be bound as NULL.
+      q_find_url.BindValue(u":cue_path"_s, song.has_cue() ? song.cue_path() : u""_s);
+      if (!q_find_url.Exec()) {
+        db_->ReportErrors(q_find_url);
+        if (!transaction.active()) return;
+        continue;
       }
+      if (q_find_url.next()) {
+        existing_song.InitFromQuery(q_find_url, true);
+      }
+      q_find_url.finish();
       if (existing_song.is_valid() && existing_song.id() != -1) {
         Song new_song = song;
         new_song.set_id(existing_song.id());
         // Don't lose user data: a missed match means the incoming song carries freshly-read (zeroed) statistics.
         new_song.MergeUserSetData(existing_song, true, true);
-        SqlQuery q(db);
-        q.prepare(QStringLiteral("UPDATE %1 SET %2 WHERE ROWID = :id").arg(songs_table_, Song::kUpdateSpec));
-        new_song.BindToQuery(&q);
-        q.BindValue(u":id"_s, new_song.id());
-        if (!q.Exec()) {
-          db_->ReportErrors(q);
-          return;
+        if (!update_song(new_song)) {
+          if (!transaction.active()) return;
+          continue;
         }
         changed_songs << new_song;
         continue;
@@ -750,20 +769,17 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
 
     // Create new song
 
-    int id = -1;
-    {  // Insert the row and create a new ID
-      SqlQuery q(db);
-      q.prepare(QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)").arg(songs_table_, Song::kColumnSpec, Song::kBindSpec));
-      song.BindToQuery(&q);
-      if (!q.Exec()) {
-        db_->ReportErrors(q);
-        return;
-      }
-      // Get the new ID
-      id = q.lastInsertId().toInt();
+    // Insert the row and create a new ID
+    song.BindToQuery(&q_insert);
+    if (!q_insert.Exec()) {
+      db_->ReportErrors(q_insert);
+      if (!transaction.active()) return;
+      continue;
     }
+    // Get the new ID
+    const int id = q_insert.lastInsertId().toInt();
 
-    if (id == -1) return;
+    if (id == -1) continue;
 
     Song song_copy(song);
     song_copy.set_id(id);
@@ -771,7 +787,7 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
 
   }
 
-  transaction.Commit();
+  if (!transaction.Commit()) return;
 
   if (!added_songs.isEmpty()) Q_EMIT SongsAdded(added_songs);
   if (!changed_songs.isEmpty()) Q_EMIT SongsChanged(changed_songs);
@@ -782,11 +798,11 @@ void CollectionBackend::AddOrUpdateSongs(const SongList &songs) {
 
 }
 
-void CollectionBackend::UpdateSongsBySongIDAsync(const SongMap &new_songs) {
-  QMetaObject::invokeMethod(this, "UpdateSongsBySongID", Qt::QueuedConnection, Q_ARG(SongMap, new_songs));
+void CollectionBackend::UpdateSongsBySongIDAsync(const SongMap &new_songs, const bool delete_missing_songs) {
+  QMetaObject::invokeMethod(this, "UpdateSongsBySongID", Qt::QueuedConnection, Q_ARG(SongMap, new_songs), Q_ARG(bool, delete_missing_songs));
 }
 
-void CollectionBackend::UpdateSongsBySongID(const SongMap &new_songs) {
+void CollectionBackend::UpdateSongsBySongID(const SongMap &new_songs, const bool delete_missing_songs) {
 
   QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
@@ -857,8 +873,8 @@ void CollectionBackend::UpdateSongsBySongID(const SongMap &new_songs) {
     }
   }
 
-  // Delete songs
-  const QList old_songs_list = old_songs.values();
+  // Delete songs, unless some of the songs could not be fetched, then the songs missing from new_songs can still exist.
+  const QList old_songs_list = delete_missing_songs ? old_songs.values() : QList<Song>();
   for (const Song &old_song : old_songs_list) {
     if (!new_songs.contains(old_song.song_id())) {
       {
@@ -891,10 +907,11 @@ void CollectionBackend::UpdateMTimesOnly(const SongList &songs) {
   QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
 
+  SqlQuery q(db);
+  q.prepare(QStringLiteral("UPDATE %1 SET mtime = :mtime WHERE ROWID = :id").arg(songs_table_));
+
   ScopedTransaction transaction(&db);
   for (const Song &song : songs) {
-    SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET mtime = :mtime WHERE ROWID = :id").arg(songs_table_));
     q.BindValue(u":mtime"_s, song.mtime());
     q.BindValue(u":id"_s, song.id());
     if (!q.Exec()) {
@@ -915,10 +932,11 @@ void CollectionBackend::DeleteSongs(const SongList &songs) {
   QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
 
+  SqlQuery q(db);
+  q.prepare(QStringLiteral("DELETE FROM %1 WHERE ROWID = :id").arg(songs_table_));
+
   ScopedTransaction transaction(&db);
   for (const Song &song : songs) {
-    SqlQuery q(db);
-    q.prepare(QStringLiteral("DELETE FROM %1 WHERE ROWID = :id").arg(songs_table_));
     q.BindValue(u":id"_s, song.id());
     if (!q.Exec()) {
       db_->ReportErrors(q);
@@ -937,7 +955,7 @@ void CollectionBackend::DeleteSongs(const SongList &songs) {
 }
 
 void CollectionBackend::DeleteSongsByUrlsAsync(const QList<QUrl> &urls) {
-  QMetaObject::invokeMethod(this, "DeleteSongsByUrl", Qt::QueuedConnection, Q_ARG(QList<QUrl>, urls));
+  QMetaObject::invokeMethod(this, [this, urls]() { DeleteSongsByUrls(urls); }, Qt::QueuedConnection);
 }
 
 void CollectionBackend::DeleteSongsByUrls(const QList<QUrl> &urls) {
@@ -1474,12 +1492,13 @@ void CollectionBackend::CompilationsNeedUpdating() {
     QString directory = url.toString(QUrl::PreferLocalFile | QUrl::RemoveFilename);
 
     CompilationInfo &info = compilation_info[directory + album];
-    info.urls << url;
+    QList<QUrl> &urls = compilation_detected ? info.urls_compilation_detected : info.urls_not_compilation_detected;
+    if (!urls.contains(url)) {
+      urls << url;
+    }
     if (!info.artists.contains(artist)) {
       info.artists << artist;
     }
-    if (compilation_detected) info.has_compilation_detected++;
-    else info.has_not_compilation_detected++;
   }
 
   // Now mark the songs that we think are in compilations
@@ -1492,18 +1511,11 @@ void CollectionBackend::CompilationsNeedUpdating() {
     const CompilationInfo &info = it.value();
 
     // If there were more than one 'effective album artist' for this album directory, then it's a compilation.
-
-    for (const QUrl &url : info.urls) {
-      if (info.artists.count() > 1) {  // This directory+album is a compilation.
-        if (info.has_not_compilation_detected > 0) {  // Run updates if any of the songs is not marked as compilations.
-          UpdateCompilations(db, changed_songs, url, true);
-        }
-      }
-      else {
-        if (info.has_compilation_detected > 0) {
-          UpdateCompilations(db, changed_songs, url, false);
-        }
-      }
+    // Only update the URLs with songs that are not marked correctly already, the others don't change.
+    const bool compilation_detected = info.artists.count() > 1;
+    const QList<QUrl> &urls = compilation_detected ? info.urls_not_compilation_detected : info.urls_compilation_detected;
+    for (const QUrl &url : urls) {
+      UpdateCompilations(db, changed_songs, url, compilation_detected);
     }
   }
 
@@ -1689,7 +1701,13 @@ void CollectionBackend::UpdateEmbeddedAlbumArt(const QString &effective_albumart
 
   {
     SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET art_embedded = :art_embedded, art_unset = 0 WHERE effective_albumartist = :effective_albumartist AND album = :album AND unavailable = 0").arg(songs_table_));
+    // Removing the embedded cover keeps art_unset, since deleting and unsetting a cover removes the embedded cover after the cover is unset.
+    if (art_embedded) {
+      q.prepare(QStringLiteral("UPDATE %1 SET art_embedded = :art_embedded, art_unset = 0 WHERE effective_albumartist = :effective_albumartist AND album = :album AND unavailable = 0").arg(songs_table_));
+    }
+    else {
+      q.prepare(QStringLiteral("UPDATE %1 SET art_embedded = :art_embedded WHERE effective_albumartist = :effective_albumartist AND album = :album AND unavailable = 0").arg(songs_table_));
+    }
     q.BindValue(u":art_embedded"_s, art_embedded ? 1 : 0);
     q.BindValue(u":effective_albumartist"_s, effective_albumartist);
     q.BindValue(u":album"_s, album);
@@ -2084,34 +2102,48 @@ SongList CollectionBackend::GetSongsBy(const QString &artist, const QString &alb
 
 void CollectionBackend::UpdateLastPlayed(const QString &artist, const QString &album, const QString &title, const qint64 lastplayed) {
 
+  // Lock before looking up the songs, so they can't be deleted, and their ROWID reused, before they are updated.
+  QMutexLocker l(db_->Mutex());
+
   const SongList songs = GetSongsBy(artist, album, title);
   if (songs.isEmpty()) {
     qLog(Debug) << "Could not find a matching song in the database for" << artist << album << title;
     return;
   }
 
-  QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
 
+  ScopedTransaction transaction(&db);
+  if (!transaction.started()) return;
+
+  QStringList updated_ids;
   for (const Song &song : songs) {
-    if (song.lastplayed() >= lastplayed) {
-      continue;
-    }
     SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET lastplayed = :lastplayed WHERE ROWID = :id").arg(songs_table_));
+    q.prepare(QStringLiteral("UPDATE %1 SET lastplayed = :lastplayed WHERE ROWID = :id AND lastplayed < :lastplayed_compare").arg(songs_table_));
     q.BindValue(u":lastplayed"_s, lastplayed);
+    q.BindValue(u":lastplayed_compare"_s, lastplayed);
     q.BindValue(u":id"_s, song.id());
     if (!q.Exec()) {
       db_->ReportErrors(q);
-      continue;
+      return;
+    }
+    if (q.numRowsAffected() > 0) {
+      updated_ids << QString::number(song.id());
     }
   }
 
-  Q_EMIT SongsStatisticsChanged(SongList() << songs);
+  if (!transaction.Commit()) return;
+
+  if (updated_ids.isEmpty()) return;
+
+  Q_EMIT SongsStatisticsChanged(GetSongsById(updated_ids, db));
 
 }
 
 void CollectionBackend::UpdatePlayCount(const QString &artist, const QString &title, const int playcount, const bool save_tags) {
+
+  // Lock before looking up the songs, so they can't be deleted, and their ROWID reused, before they are updated.
+  QMutexLocker l(db_->Mutex());
 
   const SongList songs = GetSongsBy(artist, QString(), title);
   if (songs.isEmpty()) {
@@ -2119,21 +2151,33 @@ void CollectionBackend::UpdatePlayCount(const QString &artist, const QString &ti
     return;
   }
 
-  QMutexLocker l(db_->Mutex());
   QSqlDatabase db(db_->Connect());
 
+  ScopedTransaction transaction(&db);
+  if (!transaction.started()) return;
+
+  // Only update and emit the songs that don't have the playcount already, so their tags are not saved again for nothing.
+  QStringList updated_ids;
   for (const Song &song : songs) {
     SqlQuery q(db);
-    q.prepare(QStringLiteral("UPDATE %1 SET playcount = :playcount WHERE ROWID = :id").arg(songs_table_));
+    q.prepare(QStringLiteral("UPDATE %1 SET playcount = :playcount WHERE ROWID = :id AND playcount != :playcount_compare").arg(songs_table_));
     q.BindValue(u":playcount"_s, playcount);
     q.BindValue(u":id"_s, song.id());
+    q.BindValue(u":playcount_compare"_s, playcount);
     if (!q.Exec()) {
       db_->ReportErrors(q);
       return;
     }
+    if (q.numRowsAffected() > 0) {
+      updated_ids << QString::number(song.id());
+    }
   }
 
-  Q_EMIT SongsStatisticsChanged(SongList() << songs, save_tags);
+  if (!transaction.Commit()) return;
+
+  if (updated_ids.isEmpty()) return;
+
+  Q_EMIT SongsStatisticsChanged(GetSongsById(updated_ids, db), save_tags);
 
 }
 
@@ -2178,6 +2222,131 @@ void CollectionBackend::UpdateSongRatingAsync(const int id, const float rating, 
 
 void CollectionBackend::UpdateSongsRatingAsync(const QList<int> &ids, const float rating, const bool save_tags) {
   QMetaObject::invokeMethod(this, "UpdateSongsRating", Qt::QueuedConnection, Q_ARG(QList<int>, ids), Q_ARG(float, rating), Q_ARG(bool, save_tags));
+}
+
+void CollectionBackend::UpdateSongsLyricsAsync(const SongList &lyrics_songs, const SongList &synced_lyrics_songs) {
+  QMetaObject::invokeMethod(this, "UpdateSongsLyrics", Qt::QueuedConnection, Q_ARG(SongList, lyrics_songs), Q_ARG(SongList, synced_lyrics_songs));
+}
+
+void CollectionBackend::UpdateSongsLyrics(const SongList &lyrics_songs, const SongList &synced_lyrics_songs) {
+
+  QMutexLocker l(db_->Mutex());
+  QSqlDatabase db(db_->Connect());
+
+  // Only update the columns of the changed lyrics, so other changes to the songs since they were loaded, like the playcount or the other lyrics, are not overwritten.
+  // One transaction for all songs, instead of one for each song.
+  ScopedTransaction transaction(&db);
+
+  QStringList song_ids;
+  for (const bool synced : {false, true}) {
+    const SongList &songs = synced ? synced_lyrics_songs : lyrics_songs;
+    for (const Song &song : songs) {
+      if (song.id() == -1) continue;
+      SqlQuery q(db);
+      if (synced) {
+        q.prepare(QStringLiteral("UPDATE %1 SET synced_lyrics = :lyrics, synced_lyrics_storage_type = :storage_type, lrc_mtime = :lrc_mtime WHERE ROWID = :id").arg(songs_table_));
+        q.BindStringValue(u":lyrics"_s, song.synced_lyrics());
+        q.BindValue(u":storage_type"_s, static_cast<int>(song.synced_lyrics_storage_type()));
+        q.BindValue(u":lrc_mtime"_s, song.lrc_mtime());
+      }
+      else {
+        q.prepare(QStringLiteral("UPDATE %1 SET lyrics = :lyrics, lyrics_storage_type = :storage_type WHERE ROWID = :id").arg(songs_table_));
+        q.BindStringValue(u":lyrics"_s, song.lyrics());
+        q.BindValue(u":storage_type"_s, static_cast<int>(song.lyrics_storage_type()));
+      }
+      q.BindValue(u":id"_s, song.id());
+      if (!q.Exec()) {
+        db_->ReportErrors(q);
+        // The transaction was rolled back, the updates after this would be committed one by one without being notified.
+        if (!transaction.active()) return;
+        continue;
+      }
+      const QString song_id = QString::number(song.id());
+      if (!song_ids.contains(song_id)) song_ids << song_id;
+    }
+  }
+
+  if (!transaction.Commit()) return;
+
+  if (song_ids.isEmpty()) return;
+
+  const SongList changed_songs = GetSongsById(song_ids, db);
+  if (!changed_songs.isEmpty()) Q_EMIT SongsChanged(changed_songs);
+
+}
+
+void CollectionBackend::UpdateSongLyrics(const int id, const bool synced_lyrics, const QString &lyrics, const int storage_type, const bool only_if_empty, const bool save_tags) {
+
+  if (id == -1) return;
+
+  QMutexLocker l(db_->Mutex());
+  QSqlDatabase db(db_->Connect());
+
+  // Only update the columns for these lyrics, so other changes to the song, like the playcount, are not overwritten.
+  const QString lyrics_column = synced_lyrics ? u"synced_lyrics"_s : u"lyrics"_s;
+  SqlQuery q(db);
+  // Empty lyrics stored in the database are lyrics cleared on purpose, those are not empty in this sense.
+  q.prepare(QStringLiteral("UPDATE %1 SET %2 = :lyrics, %2_storage_type = :storage_type WHERE ROWID = :id%3").arg(songs_table_, lyrics_column, only_if_empty ? QStringLiteral(" AND (%1 IS NULL OR %1 = '') AND %1_storage_type != :database_storage_type").arg(lyrics_column) : QString()));
+  q.BindStringValue(u":lyrics"_s, lyrics);
+  q.BindValue(u":storage_type"_s, storage_type);
+  q.BindValue(u":id"_s, id);
+  if (only_if_empty) {
+    q.BindValue(u":database_storage_type"_s, static_cast<int>(Song::StorageType::Database));
+  }
+  if (!q.Exec()) {
+    db_->ReportErrors(q);
+    return;
+  }
+
+  if (q.numRowsAffected() <= 0) {
+    qLog(Debug) << "Song" << id << "already has lyrics or they were cleared, not saving the lyrics found";
+    return;
+  }
+
+  const SongList new_song_list = GetSongsById(QStringList() << QString::number(id), db);
+
+  // Only the lyrics given here are to be saved to the tags, not other lyrics deliberately stored in the database.
+  Q_EMIT SongsLyricsChanged(new_song_list, save_tags && !synced_lyrics, save_tags && synced_lyrics);
+
+}
+
+void CollectionBackend::UpdateSongLyricsAsync(const int id, const bool synced_lyrics, const QString &lyrics, const Song::StorageType storage_type, const bool only_if_empty, const bool save_tags) {
+  QMetaObject::invokeMethod(this, "UpdateSongLyrics", Qt::QueuedConnection, Q_ARG(int, id), Q_ARG(bool, synced_lyrics), Q_ARG(QString, lyrics), Q_ARG(int, static_cast<int>(storage_type)), Q_ARG(bool, only_if_empty), Q_ARG(bool, save_tags));
+}
+
+void CollectionBackend::UpdateSongLyricsStorageType(const int id, const bool synced_lyrics, const QString &expected_lyrics, const int expected_storage_type, const int storage_type) {
+
+  if (id == -1) return;
+
+  QMutexLocker l(db_->Mutex());
+  QSqlDatabase db(db_->Connect());
+
+  // Compare and set in one statement, so newer lyrics, or the same lyrics saved somewhere else in the meantime, for example from the tag editor, are not changed.
+  const QString lyrics_column = synced_lyrics ? u"synced_lyrics"_s : u"lyrics"_s;
+  SqlQuery q(db);
+  q.prepare(QStringLiteral("UPDATE %1 SET %2_storage_type = :storage_type WHERE ROWID = :id AND %2 = :lyrics AND %2_storage_type = :expected_storage_type").arg(songs_table_, lyrics_column));
+  q.BindValue(u":storage_type"_s, storage_type);
+  q.BindValue(u":expected_storage_type"_s, expected_storage_type);
+  q.BindValue(u":id"_s, id);
+  q.BindStringValue(u":lyrics"_s, expected_lyrics);
+  if (!q.Exec()) {
+    db_->ReportErrors(q);
+    return;
+  }
+
+  if (q.numRowsAffected() <= 0) {
+    qLog(Debug) << "Lyrics for song" << id << "changed or were saved elsewhere while saving them to the tags, not updating where they are stored";
+    return;
+  }
+
+  const SongList new_song_list = GetSongsById(QStringList() << QString::number(id), db);
+
+  Q_EMIT SongsLyricsChanged(new_song_list, false, false);
+
+}
+
+void CollectionBackend::UpdateSongLyricsStorageTypeAsync(const int id, const bool synced_lyrics, const QString &expected_lyrics, const Song::StorageType expected_storage_type, const Song::StorageType storage_type) {
+  QMetaObject::invokeMethod(this, "UpdateSongLyricsStorageType", Qt::QueuedConnection, Q_ARG(int, id), Q_ARG(bool, synced_lyrics), Q_ARG(QString, expected_lyrics), Q_ARG(int, static_cast<int>(expected_storage_type)), Q_ARG(int, static_cast<int>(storage_type)));
 }
 
 void CollectionBackend::UpdateLastSeen(const int directory_id, const int expire_unavailable_songs_days) {

@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation>Prise en charge des étiquettes de tri pour les artistes, album, artiste de l’album, titre, compositeur et interprète</translation>
@@ -1361,15 +1361,7 @@ S&apos;il n&apos;en existe pas alors Strawberry utilisera la plus grande image d
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Votre bibliothèque est vide !</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Cliquez ici pour créer votre bibliothèque musicale</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Ajouter à la liste de lecture actuelle</translation>
@@ -1393,6 +1385,17 @@ S&apos;il n&apos;en existe pas alors Strawberry utilisera la plus grande image d
     <message>
       <source>Search for this</source>
       <translation>Rechercher cela</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Votre bibliothèque est vide !</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Cliquez ici pour créer votre bibliothèque musicale</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ S&apos;il n&apos;en existe pas alors Strawberry utilisera la plus grande image d
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Compléter les paroles automatiquement</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Paroles</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(différent entre plusieurs morceaux)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Paroles</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Précédent</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Suivant</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Sauvegarde des pistes</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Impossible d&apos;écrire les métadonnées vers %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Impossible d&apos;écrire les métadonnées vers %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Chargement des pistes</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>chargement...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Introuvable.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Modifier la description de la piste</translation>
@@ -7070,26 +7127,6 @@ Are you sure you want to continue?</source>
       <translation>Cliquez ici pour récupérer la musique</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Ajouter à la liste de lecture actuelle</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Remplacer la liste de lecture actuelle</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Ouvrir dans une nouvelle liste de lecture</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Mettre cette piste en fin de liste d&apos;attente</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Mettre cette piste au début de la liste d&apos;attente</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Supprimer des favoris</translation>
     </message>
@@ -7111,6 +7148,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>Actualiser le catalogue</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Vue des onglets de streaming</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Artistes</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Albums</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Morceaux</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Recherche</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Configurer %1...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Configurer %1...</translation>
     </message>
   </context>
   <context>
@@ -7185,40 +7256,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>Grouper par</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Configurer %1...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Vue des onglets de streaming</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Artistes</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Albums</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Morceaux</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Recherche</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Configurer %1...</translation>
     </message>
   </context>
   <context>

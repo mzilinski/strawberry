@@ -29,11 +29,13 @@
 #include <QAbstractItemModel>
 #include <QAbstractListModel>
 #include <QPersistentModelIndex>
+#include <QPointer>
 #include <QFuture>
 #include <QList>
 #include <QMap>
 #include <QSet>
 #include <QMultiMap>
+#include <QMultiHash>
 #include <QMetaType>
 #include <QVariant>
 #include <QString>
@@ -62,6 +64,7 @@ class CollectionBackend;
 class PlaylistBackend;
 class PlaylistFilter;
 class Queue;
+class PlaylistGeneratorInserter;
 class RadioService;
 
 namespace PlaylistUndoCommands {
@@ -179,8 +182,6 @@ class Playlist : public QAbstractListModel {
   static bool set_column_value(Song &song, Column column, const QVariant &value);
 
   // Persistence
-  void Restore();
-
   void ScheduleSave();
 
   // Accessors
@@ -205,6 +206,8 @@ class Playlist : public QAbstractListModel {
 
   bool stop_after_current() const;
   bool is_dynamic() const { return static_cast<bool>(dynamic_playlist_); }
+  // True while the saved items are loaded, the playlist is not saved until they are inserted.
+  bool is_restoring() const { return restoring_; }
   int dynamic_history_length() const;
 
   QString special_type() const { return special_type_; }
@@ -305,6 +308,10 @@ class Playlist : public QAbstractListModel {
 
   void ReloadItem(const QPersistentModelIndex &idx, PlaylistItemPtr item, const bool saved = false, const quint64 save_generation = -1, const Song &fallback_metadata = Song());
 
+  // Saves the changes waiting for the save timer now, used when exiting, since the timer would fire after the playlist backend exited.
+  // Changes made while restoring are saved when the playlist is restored, wait for RestoreDone() when is_restoring() is true.
+  void SavePending();
+
  public Q_SLOTS:
   void set_current_row(const int i, const Playlist::AutoScroll autoscroll = Playlist::AutoScroll::Maybe, const bool is_stopping = false, const bool force_inform = false);
   void Paused();
@@ -336,6 +343,8 @@ class Playlist : public QAbstractListModel {
 
  Q_SIGNALS:
   void RestoreFinished();
+  // Emitted when restoring finished or was cancelled.
+  void RestoreDone();
   void PlaylistLoaded();
   void CurrentSongChanged(const Song &metadata);
   void CurrentSongMetadataChanged(const Song &metadata);
@@ -362,6 +371,8 @@ class Playlist : public QAbstractListModel {
   void Rename(const int id, const QString &name);
 
  private:
+  void Restore();
+
   void SetCurrentIsPaused(const bool paused);
   int NextVirtualIndex(int i, const bool ignore_repeat_track) const;
   int PreviousVirtualIndex(int i, const bool ignore_repeat_track) const;
@@ -369,6 +380,9 @@ class Playlist : public QAbstractListModel {
 
   template<typename T>
   void InsertSongItems(const SongList &songs, const int pos, const bool play_now, const bool enqueue, const bool enqueue_next = false, const bool signal = false);
+
+  // Inserts the items through the undo stack, and auto-sorts afterwards if enabled, so that undo and redo replay the insert and the sort in the right order.
+  void InsertItemsWithUndo(const PlaylistItemPtrList &items, const int requested_pos, const bool enqueue = false, const bool enqueue_next = false);
 
   // Modify the playlist without changing the undo stack.  These are used by our friends in PlaylistUndoCommands
   void InsertItemsWithoutUndo(const PlaylistItemPtrList &items, const int pos, const bool enqueue = false, const bool enqueue_next = false);
@@ -378,12 +392,19 @@ class Playlist : public QAbstractListModel {
   void MoveItemsWithoutUndo(int start, const QList<int> &dest_rows);
   void ReOrderWithoutUndo(const PlaylistItemPtrList &new_items);
 
+  // Returns the rows of the item in ascending order, using item_rows_.
+  QList<int> ItemRows(const PlaylistItem *item) const;
+  // Must be called whenever items_ is changed.
+  void InvalidateItemRows();
+
   void RemoveItemsNotInQueue();
 
   // Removes rows with given indices from this playlist.
   bool removeRows(QList<int> &rows);
 
   void TurnOnDynamicPlaylist(PlaylistGeneratorPtr gen);
+  void ResetDynamicItemsPending();
+  PlaylistGeneratorInserter *NewDynamicInserter(const int count);
   void InsertDynamicItems(const int count);
 
   // Grays out and reloads all deleted songs in all playlists. Also, "ungreys" those songs which were once deleted but now got restored somehow.
@@ -426,6 +447,10 @@ class Playlist : public QAbstractListModel {
 
   PlaylistItemPtrList items_;
 
+  // The rows of the items in items_, rebuilt when needed after items_ changed, so finding the rows of an item doesn't scan the whole playlist.
+  mutable QMultiHash<const PlaylistItem*, int> item_rows_;
+  mutable bool item_rows_valid_;
+
   // Maps each item's UUID to the item, for fast lookups by UUID.
   // Only updated when items are added or removed; moves and reorders leave it untouched.
   QMap<QUuid, PlaylistItemPtr> items_by_uuid_;
@@ -449,6 +474,9 @@ class Playlist : public QAbstractListModel {
   bool current_is_paused_;
   int current_virtual_index_;
 
+  // Metadata of the current item if it was removed from the playlist, used to find the next track on the same album.
+  Song removed_current_item_metadata_;
+
   PlaylistSequence *playlist_sequence_;
 
   // Hack to stop QTreeView::setModel sorting the playlist
@@ -461,12 +489,20 @@ class Playlist : public QAbstractListModel {
   QString special_type_;
 
   // Cancel async restore if songs are already replaced
+  bool restoring_;
   bool cancel_restore_;
 
   bool scrobbled_;
   qint64 scrobble_point_;
 
   PlaylistGeneratorPtr dynamic_playlist_;
+  // The number of dynamic playlist items which are being generated, but not inserted yet.
+  // Only items for the current dynamic playlist are counted, the generation changes when the dynamic playlist is turned on or off, so items requested before are not counted.
+  int dynamic_items_pending_;
+  // The number of pending items which are not being generated yet, since only one batch is generated at a time.
+  int dynamic_items_queued_;
+  quint64 dynamic_generation_;
+  QPointer<PlaylistGeneratorInserter> dynamic_inserter_;
 
   bool auto_sort_;
   bool is_sorted_;

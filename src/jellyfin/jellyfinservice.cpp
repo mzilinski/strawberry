@@ -184,6 +184,42 @@ JellyfinService::~JellyfinService() {
 
 }
 
+SharedPtr<CollectionBackend> JellyfinService::artists_collection_backend() {
+  return artists_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> JellyfinService::albums_collection_backend() {
+  return albums_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> JellyfinService::songs_collection_backend() {
+  return songs_collection_backend_;
+}
+
+CollectionModel *JellyfinService::artists_collection_model() {
+  return artists_collection_model_;
+}
+
+CollectionModel *JellyfinService::albums_collection_model() {
+  return albums_collection_model_;
+}
+
+CollectionModel *JellyfinService::songs_collection_model() {
+  return songs_collection_model_;
+}
+
+CollectionFilter *JellyfinService::artists_collection_filter_model() {
+  return artists_collection_model_->filter();
+}
+
+CollectionFilter *JellyfinService::albums_collection_filter_model() {
+  return albums_collection_model_->filter();
+}
+
+CollectionFilter *JellyfinService::songs_collection_filter_model() {
+  return songs_collection_model_->filter();
+}
+
 void JellyfinService::Exit() {
 
   wait_for_exit_ << &*artists_collection_backend_ << &*albums_collection_backend_ << &*songs_collection_backend_;
@@ -1030,7 +1066,7 @@ JellyfinService::AuthReply JellyfinService::ParseAuthReply(QNetworkReply *reply)
   if (reply->error() != QNetworkReply::NoError || http_status != 200) {
     if (reply->error() != QNetworkReply::NoError && reply->error() < 200) {
       const QString redirect_error = RedirectRefusedError(reply);
-      auth_reply.error = redirect_error.isEmpty() ? QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()) : redirect_error;
+      auth_reply.error = redirect_error.isEmpty() ? QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error())) : redirect_error;
       // A refused redirect is not a login failure either.
       auth_reply.network_error = http_status == 0 || reply->error() == QNetworkReply::OperationCanceledError || reply->error() == QNetworkReply::InsecureRedirectError || reply->error() == QNetworkReply::TooManyRedirectsError;
       return auth_reply;
@@ -1048,12 +1084,12 @@ JellyfinService::AuthReply JellyfinService::ParseAuthReply(QNetworkReply *reply)
     if (parse_error.error == QJsonParseError::NoError && !json_doc.isEmpty() && json_doc.isObject()) {
       const QJsonObject json_obj = json_doc.object();
       if (json_obj.contains(u"Message"_s)) {
-        auth_reply.error = QStringLiteral("%1 (%2)").arg(json_obj.value(u"Message"_s).toString()).arg(http_status);
+        auth_reply.error = QStringLiteral("%1 (%2)").arg(json_obj.value(u"Message"_s).toString(), QString::number(http_status));
         return auth_reply;
       }
     }
 
-    auth_reply.error = QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(http_status);
+    auth_reply.error = QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(http_status));
     return auth_reply;
   }
 
@@ -1454,6 +1490,7 @@ void JellyfinService::StartSearch() {
 
   search_request_.reset(new JellyfinRequest(this, network_, query_type, this));
   QObject::connect(&*search_request_, &JellyfinRequest::Results, this, &JellyfinService::SearchResultsReceived);
+  QObject::connect(&*search_request_, &JellyfinRequest::SongsAvailable, this, &JellyfinService::SearchSongsAvailable);
   QObject::connect(&*search_request_, &JellyfinRequest::UpdateStatus, this, &JellyfinService::SearchUpdateStatusReceived);
   QObject::connect(&*search_request_, &JellyfinRequest::UpdateProgress, this, &JellyfinService::SearchUpdateProgressReceived);
 

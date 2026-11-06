@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,12 +26,16 @@
 #include <chrono>
 
 #include <QThread>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QTimer>
 #include <QDateTime>
 #include <QList>
 #include <QString>
+#include <QStringList>
+#include <QSet>
+#include <QHash>
 #include <QUrl>
 #include <QImage>
 
@@ -41,6 +45,7 @@
 #include "core/musicstorage.h"
 #include "core/song.h"
 #include "utilities/strutils.h"
+#include "utilities/fileutils.h"
 #include "tagreader/tagreaderclient.h"
 #include "organize.h"
 #include "transcoder/transcoder.h"
@@ -62,6 +67,7 @@ Organize::Organize(const SharedPtr<TaskManager> task_manager,
                    const bool overwrite,
                    const bool albumcover,
                    const NewSongInfoList &songs_info,
+                   const QStringList &original_roots,
                    const bool eject_after,
                    const QString &playlist,
                    QObject *parent)
@@ -78,6 +84,7 @@ Organize::Organize(const SharedPtr<TaskManager> task_manager,
       overwrite_(overwrite),
       albumcover_(albumcover),
       eject_after_(eject_after),
+      original_roots_(original_roots),
       task_count_(static_cast<quint64>(songs_info.count())),
       playlist_(playlist),
       tasks_complete_(0),
@@ -88,22 +95,30 @@ Organize::Organize(const SharedPtr<TaskManager> task_manager,
 
   original_thread_ = thread();
 
+  if (!destination_->LocalPath().isEmpty()) {
+    original_roots_ << destination_->LocalPath();
+  }
+
   process_files_timer_->setSingleShot(true);
   process_files_timer_->setInterval(100ms);
   QObject::connect(process_files_timer_, &QTimer::timeout, this, &Organize::ProcessSomeFiles);
 
   tasks_pending_.reserve(songs_info.count());
+  SongList songs;
+  songs.reserve(songs_info.count());
   for (const NewSongInfo &song_info : songs_info) {
     tasks_pending_ << Task(song_info);
+    songs << song_info.song_;
   }
+  unique_filenames_ = UniqueFilenames(destination_->LocalPath(), songs);
 
 }
 
 Organize::~Organize() {
 
+  // The thread is deleted when it finished.
   if (thread_) {
     thread_->quit();
-    thread_->deleteLater();
   }
 
 }
@@ -115,8 +130,12 @@ void Organize::Start() {
   task_id_ = task_manager_->StartTask(tr("Organizing files"));
   task_manager_->SetTaskBlocksCollectionScans(task_id_);
 
+  // The thread is deleted in the original thread when it finished, since this can be deleted before the thread finished.
   thread_ = new QThread;
   QObject::connect(thread_, &QThread::started, this, &Organize::ProcessSomeFiles);
+  QObject::connect(thread_, &QThread::finished, thread_, &QThread::deleteLater);
+  // This is deleted when the thread finished, not when processing finished, since the thread still uses this when the slot processing the files returns, deleting it in the original thread before that crashes.
+  QObject::connect(thread_, &QThread::finished, this, &QObject::deleteLater);
 
   QObject::connect(transcoder_, &Transcoder::JobComplete, this, &Organize::FileTranscoded);
   QObject::connect(transcoder_, &Transcoder::LogLine, this, &Organize::LogLine);
@@ -153,22 +172,21 @@ void Organize::ProcessSomeFiles() {
     UpdateProgress();
 
     QString error_text;
-    if (!destination_->FinishCopy(files_with_errors_.isEmpty(), error_text) && !error_text.isEmpty()) {
+    const bool success = destination_->FinishCopy(files_with_errors_.isEmpty(), error_text);
+    if (!success && !error_text.isEmpty()) {
       log_ << error_text;
     }
     if (eject_after_) destination_->Eject();
 
     task_manager_->SetTaskFinished(task_id_);
 
-    Q_EMIT Finished(files_with_errors_, log_);
+    Q_EMIT Finished(files_with_errors_, log_, success);
 
-    // Move back to the original thread so deleteLater() can get called in the main thread's event loop
-    moveToThread(original_thread_);
-    deleteLater();
-
-    // Stop this thread
-    thread_->quit();
+    // Stop this thread, then move back to the original thread, this is deleted there when the thread finished.
     finished_ = true;
+    thread_->quit();
+    thread_ = nullptr;
+    moveToThread(original_thread_);
     return;
   }
 
@@ -210,8 +228,14 @@ void Organize::ProcessSomeFiles() {
         // Get the preset
         TranscoderPreset preset = Transcoder::PresetForFileType(dest_type);
 
+        // The new extension can make the filename the same as the filename of another song, so make it unique now that the extension is known.
+        QString dest_filename_with_new_ext = Utilities::FiddleFileExtension(task.song_info_.new_filename_, preset.extension_);
+        if (task.song_info_.unique_filename_) {
+          dest_filename_with_new_ext = unique_filenames_.Make(dest_filename_with_new_ext, task.song_info_.song_.url().toLocalFile());
+          task.song_info_.new_filename_ = dest_filename_with_new_ext;
+        }
+
         // Check if the destination file already exists and we're not allowed to overwrite
-        const QString dest_filename_with_new_ext = Utilities::FiddleFileExtension(task.song_info_.new_filename_, preset.extension_);
         if (ShouldSkipFile(dest_filename_with_new_ext)) {
           qLog(Debug) << "Skipping" << task.song_info_.song_.url().toLocalFile() << ", destination file already exists";
           tasks_complete_++;
@@ -234,6 +258,11 @@ void Organize::ProcessSomeFiles() {
       }
     }
 
+    // Make the filename unique among the songs copied, transcoded songs got their filename when transcoding was started.
+    if (task.transcoded_filename_.isEmpty() && task.song_info_.unique_filename_) {
+      task.song_info_.new_filename_ = unique_filenames_.Make(task.song_info_.new_filename_, task.song_info_.song_.url().toLocalFile());
+    }
+
     // Check if the destination file already exists and we're not allowed to overwrite
     if (ShouldSkipFile(task.song_info_.new_filename_)) {
       qLog(Debug) << "Skipping" << task.song_info_.song_.url().toLocalFile() << ", destination file already exists";
@@ -243,6 +272,9 @@ void Organize::ProcessSomeFiles() {
 
     MusicStorage::CopyJob job;
     job.source_ = task.transcoded_filename_.isEmpty() ? task.song_info_.song_.url().toLocalFile() : task.transcoded_filename_;
+    // The source of a transcoded file is a temporary file, which is removed below, so the original is removed instead.
+    job.original_source_ = task.song_info_.song_.url().toLocalFile();
+    job.original_root_ = OriginalRoot(original_roots_, job.original_source_);
     job.destination_ = task.song_info_.new_filename_;
     job.metadata_ = song;
     job.overwrite_ = overwrite_;
@@ -281,6 +313,10 @@ void Organize::ProcessSomeFiles() {
 
     QString error_text;
     if (destination_->CopyToStorage(job, error_text)) {
+      // The original file was moved, so its filename can be used by other songs now.
+      if (job.remove_original_) {
+        unique_filenames_.Release(task.song_info_.song_.url().toLocalFile());
+      }
       if (job.remove_original_ && song.is_local_collection_song() && destination_->source() == Song::Source::Collection) {
         // Notify other aspects of system that song has been invalidated
         QString root = destination_->LocalPath();
@@ -318,6 +354,134 @@ bool Organize::ShouldSkipFile(const QString &filename) const {
   }
 
   return QFile::exists(destination_->LocalPath() + QLatin1Char('/') + filename);
+
+}
+
+QString Organize::OriginalRoot(const QStringList &roots, const QString &filename) {
+
+  // Use the innermost directory containing the file, in case a collection directory is inside another one.
+  // The directory of the file is used, so a song which is a link to a file elsewhere gets the root of the link, not of the file it links to.
+  // The directories are compared with links resolved, so a directory linked from inside another directory is used instead of the directory containing the link.
+  const QString directory = QFileInfo(filename).absolutePath();
+  QString original_root;
+  for (const QString &root : roots) {
+    if (!Utilities::IsSameDirectory(directory, root) && !Utilities::PathIsInsideDirectory(directory, root)) continue;
+    const QString canonical_root = QFileInfo(root).canonicalFilePath();
+    if (canonical_root.length() > original_root.length()) {
+      original_root = canonical_root;
+    }
+  }
+
+  return original_root;
+
+}
+
+Organize::UniqueFilenames::UniqueFilenames(const QString &root, const SongList &songs) {
+
+  if (!root.isEmpty()) {
+    root_ = QDir::cleanPath(root);
+    root_key_ = Key(root_);
+    if (!root_key_.endsWith(u'/')) root_key_.append(u'/');
+  }
+
+  for (const Song &song : songs) {
+    const QString key = RootRelativeKey(song.url().toLocalFile());
+    if (!key.isEmpty()) {
+      ++reserved_[key];
+    }
+  }
+
+}
+
+QString Organize::UniqueFilenames::Key(const QString &filename) {
+
+  return filename.normalized(QString::NormalizationForm_C).toCaseFolded();
+
+}
+
+QString Organize::UniqueFilenames::RootRelativeKey(const QString &source_filename) const {
+
+  if (root_key_.isEmpty() || source_filename.isEmpty()) return QString();
+
+  const QString key = Key(QDir::cleanPath(source_filename));
+  if (!key.startsWith(root_key_)) return QString();
+
+  return key.mid(root_key_.length());
+
+}
+
+void Organize::UniqueFilenames::Release(const QString &source_filename) {
+
+  const QString source_key = RootRelativeKey(source_filename);
+  if (!source_key.isEmpty() && reserved_.contains(source_key)) {
+    if (--reserved_[source_key] <= 0) {
+      reserved_.remove(source_key);
+    }
+  }
+
+}
+
+bool Organize::UniqueFilenames::IsAvailable(const QString &filename, const QString &key, const QString &source_filename, const QString &source_key) const {
+
+  if (used_.contains(key)) return false;
+  if (!reserved_.contains(key)) return true;
+
+  // The song can keep its own file, with the exact same path.
+  // A path which only matches ignoring case, like when only the case of the filename changes, is only allowed when no other song has a file matching it, since that would be the file of another song on case-sensitive filesystems.
+  // Its file stays reserved, since it's still needed until the song is organized, and when copying, the original file is kept.
+  const bool own_file = !root_.isEmpty() && !source_filename.isEmpty() && QDir::cleanPath(root_ + u'/' + filename) == QDir::cleanPath(source_filename);
+  const bool only_own_reservation = source_key == key && reserved_.value(key) == 1;
+
+  return own_file || only_own_reservation;
+
+}
+
+QString Organize::UniqueFilenames::Make(const QString &filename, const QString &source_filename) {
+
+  const QString source_key = RootRelativeKey(source_filename);
+
+  const QString key = Key(filename);
+  if (IsAvailable(filename, key, source_filename, source_key)) {
+    used_.insert(key);
+    return filename;
+  }
+
+  const QFileInfo fileinfo(filename);
+  const QString path_without_extension = Utilities::PathWithoutFilenameExtension(filename);
+  const QString suffix = fileinfo.suffix().isEmpty() ? QString() : u'.' + fileinfo.suffix();
+
+  // When the song's own file is a numbered filename of this filename, for example when it was organized before, it keeps it.
+  // This is checked first, the number can be lower than the next number when the songs are organized in another order.
+  const QString numbered_prefix_key = Key(path_without_extension + u'(');
+  const QString numbered_suffix_key = Key(u')' + suffix);
+  if (source_key.length() > numbered_prefix_key.length() + numbered_suffix_key.length() && source_key.startsWith(numbered_prefix_key) && source_key.endsWith(numbered_suffix_key)) {
+    bool ok = false;
+    const int number = source_key.mid(numbered_prefix_key.length(), source_key.length() - numbered_prefix_key.length() - numbered_suffix_key.length()).toInt(&ok);
+    if (ok && number >= 2) {
+      const QString own_filename = path_without_extension + u'(' + QString::number(number) + u')' + suffix;
+      const QString own_key = Key(own_filename);
+      if (IsAvailable(own_filename, own_key, source_filename, source_key)) {
+        used_.insert(own_key);
+        return own_filename;
+      }
+    }
+  }
+
+  // Continue with the next number for this filename, instead of trying all the numbers again for each song with the same filename.
+
+  int number = next_number_.value(key, 2);
+  QString unique_filename;
+  QString unique_key;
+  do {
+    unique_filename = path_without_extension + u'(' + QString::number(number) + u')' + suffix;
+    unique_key = Key(unique_filename);
+    ++number;
+  } while (!IsAvailable(unique_filename, unique_key, source_filename, source_key));
+  next_number_[key] = number;
+
+  used_.insert(unique_key);
+
+  return unique_filename;
 
 }
 

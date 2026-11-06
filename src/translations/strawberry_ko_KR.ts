@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>라이브러리가 비어 있습니다!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>음악을 추가하려면 여기를 클릭하십시오</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>현재 재생 목록에 추가</translation>
@@ -1393,6 +1385,17 @@ If there are no matches then it will use the largest image in the directory.</so
     <message>
       <source>Search for this</source>
       <translation>다음 항목 검색</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>라이브러리가 비어 있습니다!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>음악을 추가하려면 여기를 클릭하십시오</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation type="unfinished">Complete lyrics automatically</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>가사</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation type="unfinished">(different across multiple songs)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>가사</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>이전</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>다음</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>트랙 저장 중</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation type="unfinished">Could not write metadata to %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation type="unfinished">Could not write metadata to %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>트랙 불러오는 중</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation type="unfinished">loading...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation type="unfinished">Not found.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>트랙 정보 편집</translation>
@@ -7065,26 +7122,6 @@ Are you sure you want to continue?</source>
       <translation>음악을 가져오려면 여기를 클릭하십시오</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>현재 재생 목록에 추가</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>현재 재생 목록 대체</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>새 재생 목록에서 열기</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>대기열에 트랙 추가</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>다음에 재생할 대기열에 추가</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>즐겨찾기에서 삭제</translation>
     </message>
@@ -7106,6 +7143,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>카탈로그 새로 고침</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation type="unfinished">Streaming Tabs View</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>아티스트</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>앨범</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>노래</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>검색</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>%1 설정...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>%1 설정...</translation>
     </message>
   </context>
   <context>
@@ -7180,40 +7251,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>그룹 방식</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>%1 설정...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation type="unfinished">Streaming Tabs View</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>아티스트</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>앨범</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>노래</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>검색</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>%1 설정...</translation>
     </message>
   </context>
   <context>

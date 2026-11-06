@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Η συλλογή σας είναι άδεια!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Κάντε κλικ εδώ για να προσθέσετε μουσική</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Προσάρτηση στην τρέχουσα λίστα</translation>
@@ -1393,6 +1385,17 @@ If there are no matches then it will use the largest image in the directory.</so
     <message>
       <source>Search for this</source>
       <translation>Αναζήτηση για αυτό</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Η συλλογή σας είναι άδεια!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Κάντε κλικ εδώ για να προσθέσετε μουσική</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Αυτόματη ολοκλήρωση στίχων</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Στίχοι</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(διαφορετικά μεταξύ πολλών τραγουδιών)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Στίχοι</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Προηγούμενο</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Επόμενο</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Αποθήκευση τραγουδιών</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Αδυναμία εγγραφής μεταδεδομένων στο %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Αδυναμία εγγραφής μεταδεδομένων στο %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Φόρτωση τραγουδιών</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>φόρτωση...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Δε βρέθηκε.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Επεξεργασία πληροφοριών τραγουδιού</translation>
@@ -7070,26 +7127,6 @@ Are you sure you want to continue?</source>
       <translation>Κάντε κλικ εδώ για να ανακτήσετε μουσική</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Προσάρτηση στην τρέχουσα λίστα</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Αντικατάσταση της τρέχουσας λίστας</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Άνοιγμα σε νέα λίστα</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Εισαγωγή στην ουρά</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Εισαγωγή στην ουρά σαν επόμενο</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Αφαίρεση από τα αγαπημένα</translation>
     </message>
@@ -7111,6 +7148,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>Ανανέωση καταλόγου</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Προβολή Καρτέλων Ροής</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Καλλιτέχνες</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Άλμπουμ</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Τραγούδια</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Αναζήτηση</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Ρύθμιση %1...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Ρύθμιση %1...</translation>
     </message>
   </context>
   <context>
@@ -7185,40 +7256,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>Ομαδοποίηση κατά</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Ρύθμιση %1...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Προβολή Καρτέλων Ροής</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Καλλιτέχνες</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Άλμπουμ</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Τραγούδια</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Αναζήτηση</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Ρύθμιση %1...</translation>
     </message>
   </context>
   <context>

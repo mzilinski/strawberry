@@ -74,7 +74,8 @@ PlaylistTabBar::PlaylistTabBar(QWidget *parent)
       drag_hover_tab_(0),
       suppress_current_changed_(false),
       initialized_(false),
-      rename_editor_(new RenameTabLineEdit(this)) {
+      rename_editor_(new RenameTabLineEdit(this)),
+      rename_playlist_id_(-1) {
 
   setAcceptDrops(true);
   setElideMode(Qt::ElideRight);
@@ -143,12 +144,18 @@ void PlaylistTabBar::contextMenuEvent(QContextMenuEvent *e) {
 
 void PlaylistTabBar::mouseReleaseEvent(QMouseEvent *e) {
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 11, 0)
+  // Handle middle click ourselves and don't pass it on to QTabBar.
+  // Since Qt 6.11, QTabBar also emits tabCloseRequested on middle click, and if both handle it, the tab that moved under the cursor is closed as well.
+  // This can't be a compile-time check because Strawberry might be built against an older Qt than the one used at runtime.
   if (e->button() == Qt::MiddleButton) {
-    menu_index_ = tabAt(e->pos());
-    CloseSlot();
+    const int index = tabAt(e->pos());
+    if (index != -1) {
+      menu_index_ = index;
+      CloseSlot();
+      e->accept();
+      return;
+    }
   }
-#endif
 
   QTabBar::mouseReleaseEvent(e);
 
@@ -165,8 +172,9 @@ void PlaylistTabBar::mouseDoubleClickEvent(QMouseEvent *e) {
     }
     else {
       menu_index_ = index;
+      rename_playlist_id_ = tabData(index).toInt();
       rename_editor_->setGeometry(tabRect(index));
-      rename_editor_->setText(manager_->GetPlaylistName(tabData(index).toInt()));
+      rename_editor_->setText(manager_->GetPlaylistName(rename_playlist_id_));
       rename_editor_->setVisible(true);
       rename_editor_->setFocus();
     }
@@ -191,11 +199,19 @@ void PlaylistTabBar::RenameSlot() {
 }
 
 void PlaylistTabBar::RenameInline() {
-  Q_EMIT Rename(tabData(menu_index_).toInt(), rename_editor_->text());
+
+  // The editor was already hidden, or the change was discarded.
+  if (rename_playlist_id_ == -1) return;
+
+  Q_EMIT Rename(rename_playlist_id_, rename_editor_->text());
   HideEditor();
+
 }
 
 void PlaylistTabBar::HideEditor() {
+
+  // Hiding the editor can emit editingFinished(), so clear the playlist first, so that does not rename it.
+  rename_playlist_id_ = -1;
 
   // editingFinished() will be called twice due to Qt bug #40, so we reuse the same instance, don't delete it
   rename_editor_->setVisible(false);
@@ -265,6 +281,12 @@ void PlaylistTabBar::CloseSlot() {
     if (dont_prompt_again.isChecked() != ask_for_delete) {
       s.setValue(PlaylistSettings::kWarnClosePlaylist, dont_prompt_again.isChecked());
     }
+  }
+
+  // Closing a tab from its close button or with a middle click doesn't take the focus from the editor, so discard the rename before the tabs shift.
+  // This is done after the close is confirmed, so the rename is kept if closing is canceled.
+  if (rename_editor_->isVisible()) {
+    HideEditor();
   }
 
   // Close the playlist. If the playlist is not a favorite playlist, it will be deleted, as it will not be visible after being closed.

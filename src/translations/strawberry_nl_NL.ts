@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ Als er geen match is wordt de grootste afbeelding uit de map gebruikt.</translat
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Uw bibliotheek is leeg!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Klik hier om muziek toe te voegen</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Aan huidige afspeellijst toevoegen</translation>
@@ -1393,6 +1385,17 @@ Als er geen match is wordt de grootste afbeelding uit de map gebruikt.</translat
     <message>
       <source>Search for this</source>
       <translation>Zoek hier naar</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Uw bibliotheek is leeg!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Klik hier om muziek toe te voegen</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ Als er geen match is wordt de grootste afbeelding uit de map gebruikt.</translat
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation type="unfinished">Complete lyrics automatically</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation type="unfinished">Lyrics</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation type="unfinished">(different across multiple songs)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation type="unfinished">Lyrics</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Vorige</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Volgende</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Nummers opslaan</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation type="unfinished">Could not write metadata to %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation type="unfinished">Could not write metadata to %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Nummers laden</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation type="unfinished">loading...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation type="unfinished">Not found.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Nummerinformatie bewerken</translation>
@@ -7070,26 +7127,6 @@ Weet je zeker dat je verder wilt gaan?</translation>
       <translation>Klik hier om muziek op te halen</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Aan huidige afspeellijst toevoegen</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Huidige afspeellijst vervangen</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>In een nieuwe afspeellijst openen</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Nummer in de wachtrij plaatsen</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation type="unfinished">Queue to play next</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Verwijder van favorieten</translation>
     </message>
@@ -7111,6 +7148,40 @@ Weet je zeker dat je verder wilt gaan?</translation>
     <message>
       <source>Refresh catalogue</source>
       <translation type="unfinished">Refresh catalogue</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation type="unfinished">Streaming Tabs View</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Artiesten</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation type="unfinished">Albums</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Liedjes</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Zoeken</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Configureren %1</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Configureren %1</translation>
     </message>
   </context>
   <context>
@@ -7185,40 +7256,6 @@ Weet je zeker dat je verder wilt gaan?</translation>
     <message>
       <source>Group by</source>
       <translation>Groeperen op</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Configureren %1</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation type="unfinished">Streaming Tabs View</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Artiesten</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation type="unfinished">Albums</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Liedjes</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Zoeken</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Configureren %1</translation>
     </message>
   </context>
   <context>

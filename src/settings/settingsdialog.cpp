@@ -52,7 +52,7 @@
 #include "core/appearance.h"
 #include "utilities/screenutils.h"
 #include "widgets/groupediconview.h"
-#include "collection/collectionlibrary.h"
+#include "collection/collectionmanager.h"
 #include "collection/collectionmodel.h"
 #include "streaming/streamingservices.h"
 
@@ -118,8 +118,8 @@ constexpr char kGeometry[] = "geometry";
 }
 
 SettingsDialog::SettingsDialog(const SharedPtr<Player> player,
-                               const SharedPtr<DeviceFinders> device_finders,
-                               const SharedPtr<CollectionLibrary> collection,
+                               const SharedPtr<AudioDeviceListers> audio_device_listers,
+                               const SharedPtr<CollectionManager> collection,
                                const SharedPtr<CoverProviders> cover_providers,
                                const SharedPtr<LyricsProviders> lyrics_providers,
                                const SharedPtr<AudioScrobbler> scrobbler,
@@ -142,7 +142,7 @@ SettingsDialog::SettingsDialog(const SharedPtr<Player> player,
   QTreeWidgetItem *general = AddCategory(tr("General"));
   AddPage(Page::Behaviour, new BehaviourSettingsPage(this, this), general);
   AddPage(Page::Collection, new CollectionSettingsPage(this, collection, collection->backend(), collection->model(), collection->model()->directory_model(), this), general);
-  AddPage(Page::Backend, new BackendSettingsPage(this, player, device_finders, this), general);
+  AddPage(Page::Backend, new BackendSettingsPage(this, player, audio_device_listers, this), general);
   AddPage(Page::Playlist, new PlaylistSettingsPage(this, this), general);
   AddPage(Page::Scrobbler, new ScrobblerSettingsPage(this, scrobbler, this), general);
   AddPage(Page::Covers, new CoversSettingsPage(this, cover_providers, this), general);

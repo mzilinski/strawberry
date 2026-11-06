@@ -117,8 +117,9 @@
 #include "dialogs/addstreamdialog.h"
 #include "dialogs/deleteconfirmationdialog.h"
 #include "dialogs/messagedialog.h"
-#include "dialogs/edittagdialog.h"
-#include "dialogs/trackselectiondialog.h"
+#include "songeditor/tageditor.h"
+#include "songeditor/lyricseditor.h"
+#include "songeditor/trackselectiondialog.h"
 #include "organize/organizedialog.h"
 #include "widgets/fancytabwidget.h"
 #include "widgets/playingwidget.h"
@@ -128,7 +129,7 @@
 #include "fileview/fileview.h"
 #include "osd/osdbase.h"
 #include "context/contextview.h"
-#include "collection/collectionlibrary.h"
+#include "collection/collectionmanager.h"
 #include "collection/collectionbackend.h"
 #include "collection/collectiondirectorymodel.h"
 #include "collection/collectionviewcontainer.h"
@@ -196,8 +197,8 @@
 
 #include "streaming/streamingservices.h"
 #include "streaming/streamingservice.h"
-#include "streaming/streamingsongsview.h"
-#include "streaming/streamingtabsview.h"
+#include "streaming/streaminglibraryview.h"
+#include "streaming/streamingfavoritesview.h"
 #include "streaming/streamingcollectionview.h"
 #include "streaming/streamingsearchview.h"
 
@@ -263,6 +264,13 @@ using namespace Qt::Literals::StringLiterals;
 namespace {
 const int kTrackSliderUpdateTimeMs = 200;
 const int kTrackPositionUpdateTimeMs = 1000;
+
+// Returns the playlist the index belongs to, which is not necessarily the current playlist when a reply arrives, or nullptr when the row or the playlist was removed.
+Playlist *PlaylistOfIndex(const QPersistentModelIndex &idx) {
+  if (!idx.isValid()) return nullptr;
+  return qobject_cast<Playlist*>(const_cast<QAbstractItemModel*>(idx.model()));
+}
+
 }  // namespace
 
 #ifdef HAVE_QTSPARKLE
@@ -330,7 +338,8 @@ MainWindow::MainWindow(Application *app,
         QObject::connect(console, &Console::Error, this, &MainWindow::ShowErrorDialog);
         return console;
       }),
-      edit_tag_dialog_(std::bind(&MainWindow::CreateEditTagDialog, this)),
+      tag_editor_(std::bind(&MainWindow::CreateTagEditor, this)),
+      lyrics_editor_(std::bind(&MainWindow::CreateLyricsEditor, this)),
       album_cover_choice_controller_(new AlbumCoverChoiceController(this)),
 #ifdef HAVE_GLOBALSHORTCUTS
       globalshortcuts_manager_(new GlobalShortcutsManager(this)),
@@ -354,6 +363,7 @@ MainWindow::MainWindow(Application *app,
       equalizer_(new Equalizer),
       organize_dialog_([this, app]() {
         OrganizeDialog *dialog = new OrganizeDialog(app->task_manager(), app->tagreader_client(), app->collection_backend(), this);
+        dialog->SetCollectionDirectoryModel(app->collection()->model()->directory_model());
         dialog->SetDestinationModel(app->collection()->model()->directory_model());
         return dialog;
       }),
@@ -375,22 +385,22 @@ MainWindow::MainWindow(Application *app,
                                                            app->current_albumcover_loader(),
                                                            this)),
 #ifdef HAVE_SUBSONIC
-      subsonic_view_(new StreamingSongsView(app->streaming_services()->ServiceBySource(Song::Source::Subsonic), QLatin1String(SubsonicSettings::kSettingsGroup), this)),
+      subsonic_view_(new StreamingLibraryView(app->streaming_services()->ServiceBySource(Song::Source::Subsonic), QLatin1String(SubsonicSettings::kSettingsGroup), this)),
 #endif
 #ifdef HAVE_TIDAL
-      tidal_view_(new StreamingTabsView(app->streaming_services()->ServiceBySource(Song::Source::Tidal), app->albumcover_loader(), QLatin1String(TidalSettings::kSettingsGroup), this)),
+      tidal_view_(new StreamingFavoritesView(app->streaming_services()->ServiceBySource(Song::Source::Tidal), app->albumcover_loader(), QLatin1String(TidalSettings::kSettingsGroup), this)),
 #endif
 #ifdef HAVE_SPOTIFY
-      spotify_view_(new StreamingTabsView(app->streaming_services()->ServiceBySource(Song::Source::Spotify), app->albumcover_loader(), QLatin1String(SpotifySettings::kSettingsGroup), this)),
+      spotify_view_(new StreamingFavoritesView(app->streaming_services()->ServiceBySource(Song::Source::Spotify), app->albumcover_loader(), QLatin1String(SpotifySettings::kSettingsGroup), this)),
 #endif
 #ifdef HAVE_QOBUZ
-      qobuz_view_(new StreamingTabsView(app->streaming_services()->ServiceBySource(Song::Source::Qobuz), app->albumcover_loader(), QLatin1String(QobuzSettings::kSettingsGroup), this)),
+      qobuz_view_(new StreamingFavoritesView(app->streaming_services()->ServiceBySource(Song::Source::Qobuz), app->albumcover_loader(), QLatin1String(QobuzSettings::kSettingsGroup), this)),
 #endif
 #ifdef HAVE_PLEX
-      plex_view_(new StreamingSongsView(app->streaming_services()->ServiceBySource(Song::Source::Plex), QLatin1String(PlexSettings::kSettingsGroup), this)),
+      plex_view_(new StreamingLibraryView(app->streaming_services()->ServiceBySource(Song::Source::Plex), QLatin1String(PlexSettings::kSettingsGroup), this)),
 #endif
 #ifdef HAVE_JELLYFIN
-      jellyfin_view_(new StreamingTabsView(app->streaming_services()->ServiceBySource(Song::Source::Jellyfin), app->albumcover_loader(), QLatin1String(JellyfinSettings::kSettingsGroup), this)),
+      jellyfin_view_(new StreamingFavoritesView(app->streaming_services()->ServiceBySource(Song::Source::Jellyfin), app->albumcover_loader(), QLatin1String(JellyfinSettings::kSettingsGroup), this)),
 #endif
       radio_view_(new RadioViewContainer(this)),
       collection_show_all_(nullptr),
@@ -411,7 +421,8 @@ MainWindow::MainWindow(Application *app,
       playlist_queue_(nullptr),
       playlist_queue_play_next_(nullptr),
       playlist_skip_(nullptr),
-      playlist_add_to_another_(nullptr),
+      playlist_edit_lyrics_(nullptr),
+      playlist_add_to_another_menu_(nullptr),
       playlistitem_actions_separator_(nullptr),
       playlist_rescan_songs_(nullptr),
       playlist_fetch_metadata_(nullptr),
@@ -459,7 +470,7 @@ MainWindow::MainWindow(Application *app,
   album_cover_choice_controller_->Init(app->network(), app->tagreader_client(), app->collection()->backend(), app->albumcover_loader(), app->current_albumcover_loader(), app->cover_providers(), app->streaming_services());
 
   ui_->multi_loading_indicator->SetTaskManager(app_->task_manager());
-  context_view_->Init(collection_view_->view(), album_cover_choice_controller_, app_->lyrics_providers());
+  context_view_->Init(collection_view_->view(), album_cover_choice_controller_, app_->player(), app_->lyrics_providers());
   ui_->widget_playing->Init(album_cover_choice_controller_);
 
   // Initialize the search widget
@@ -532,7 +543,7 @@ MainWindow::MainWindow(Application *app,
   collection_view_->view()->setModel(app_->collection()->model()->filter());
   collection_view_->view()->Init(app->task_manager(), app->tagreader_client(), app->network(), app->albumcover_loader(), app->current_albumcover_loader(), app->cover_providers(), app->lyrics_providers(), app->collection(), app->device_manager(), app->streaming_services());
   device_view_->view()->Init(app->task_manager(), app->tagreader_client(), app->device_manager(), app->collection_model()->directory_model());
-  playlist_list_->Init(app_->task_manager(), app->tagreader_client(), app_->playlist_manager(), app_->playlist_backend(), app_->device_manager());
+  playlist_list_->Init(app_->task_manager(), app->tagreader_client(), app_->playlist_manager(), app_->playlist_backend(), app_->device_manager(), app->collection_model()->directory_model());
 
   organize_dialog_->SetDestinationModel(app_->collection()->model()->directory_model());
 
@@ -644,9 +655,9 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(ui_->action_equalizer, &QAction::triggered, this, &MainWindow::ShowEqualizer);
   QObject::connect(ui_->action_transcoder, &QAction::triggered, this, &MainWindow::ShowTranscodeDialog);
   QObject::connect(ui_->action_jump, &QAction::triggered, ui_->playlist->view(), &PlaylistView::JumpToCurrentlyPlayingTrack);
-  QObject::connect(ui_->action_update_collection, &QAction::triggered, &*app_->collection(), &CollectionLibrary::IncrementalScan);
-  QObject::connect(ui_->action_full_collection_scan, &QAction::triggered, &*app_->collection(), &CollectionLibrary::FullScan);
-  QObject::connect(ui_->action_stop_collection_scan, &QAction::triggered, &*app_->collection(), &CollectionLibrary::StopScan);
+  QObject::connect(ui_->action_update_collection, &QAction::triggered, &*app_->collection(), &CollectionManager::IncrementalScan);
+  QObject::connect(ui_->action_full_collection_scan, &QAction::triggered, &*app_->collection(), &CollectionManager::FullScan);
+  QObject::connect(ui_->action_stop_collection_scan, &QAction::triggered, &*app_->collection(), &CollectionManager::StopScan);
   QObject::connect(ui_->action_add_files_to_transcoder, &QAction::triggered, this, &MainWindow::AddFilesToTranscoder);
   ui_->action_add_files_to_transcoder->setIcon(IconLoader::Load(u"tools-wizard"_s));
 
@@ -760,7 +771,7 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(ui_->track_slider, &TrackSlider::Next, &*app_->player(), &Player::Next);
 
   // Collection connections
-  QObject::connect(&*app_->collection(), &CollectionLibrary::Error, this, &MainWindow::ShowErrorDialog);
+  QObject::connect(&*app_->collection(), &CollectionManager::Error, this, &MainWindow::ShowErrorDialog);
   QObject::connect(collection_view_->view(), &CollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(collection_view_->view(), &CollectionView::ShowSettingsDialog, this, &MainWindow::OpenCollectionSettingsDialog);
   QObject::connect(collection_view_->view(), &CollectionView::Error, this, &MainWindow::ShowErrorDialog);
@@ -770,11 +781,8 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(app_->collection_model(), &CollectionModel::modelAboutToBeReset, collection_view_->view(), &CollectionView::SaveFocus);
   QObject::connect(app_->collection_model(), &CollectionModel::modelReset, collection_view_->view(), &CollectionView::RestoreFocus);
 
-  QObject::connect(&*app_->task_manager(), &TaskManager::PauseCollectionWatchers, &*app_->collection(), &CollectionLibrary::PauseWatcher);
-  QObject::connect(&*app_->task_manager(), &TaskManager::ResumeCollectionWatchers, &*app_->collection(), &CollectionLibrary::ResumeWatcher);
-
-  QObject::connect(&*app_->playlist_manager(), &PlaylistManager::CurrentSongChanged, &*app_->collection(), &CollectionLibrary::CurrentSongChanged);
-  QObject::connect(&*app_->player(), &Player::Stopped, &*app_->collection(), &CollectionLibrary::Stopped);
+  QObject::connect(&*app_->playlist_manager(), &PlaylistManager::CurrentSongChanged, &*app_->collection(), &CollectionManager::CurrentSongChanged);
+  QObject::connect(&*app_->player(), &Player::Stopped, &*app_->collection(), &CollectionManager::Stopped);
 
   QObject::connect(&*app_->playlist_manager(), &PlaylistManager::CurrentSongChanged, &*app_->current_albumcover_loader(), &CurrentAlbumCoverLoader::LoadAlbumCover);
   QObject::connect(&*app_->current_albumcover_loader(), &CurrentAlbumCoverLoader::AlbumCoverLoaded, this, &MainWindow::AlbumCoverLoaded);
@@ -831,12 +839,12 @@ MainWindow::MainWindow(Application *app,
   collection_view_->filter_widget()->AddMenuAction(collection_config_action);
 
 #ifdef HAVE_SUBSONIC
-  QObject::connect(subsonic_view_, &StreamingSongsView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
+  QObject::connect(subsonic_view_, &StreamingLibraryView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
   QObject::connect(subsonic_view_->view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
 #endif
 
 #ifdef HAVE_TIDAL
-  QObject::connect(tidal_view_, &StreamingTabsView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
+  QObject::connect(tidal_view_, &StreamingFavoritesView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
   QObject::connect(tidal_view_->artists_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(tidal_view_->albums_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(tidal_view_->songs_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
@@ -848,7 +856,7 @@ MainWindow::MainWindow(Application *app,
 #endif
 
 #ifdef HAVE_QOBUZ
-  QObject::connect(qobuz_view_, &StreamingTabsView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
+  QObject::connect(qobuz_view_, &StreamingFavoritesView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
   QObject::connect(qobuz_view_->artists_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(qobuz_view_->albums_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(qobuz_view_->songs_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
@@ -857,7 +865,7 @@ MainWindow::MainWindow(Application *app,
 #endif
 
 #ifdef HAVE_SPOTIFY
-  QObject::connect(spotify_view_, &StreamingTabsView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
+  QObject::connect(spotify_view_, &StreamingFavoritesView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
   QObject::connect(spotify_view_->artists_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(spotify_view_->albums_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(spotify_view_->songs_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
@@ -869,12 +877,12 @@ MainWindow::MainWindow(Application *app,
 #endif
 
 #ifdef HAVE_PLEX
-  QObject::connect(plex_view_, &StreamingSongsView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
+  QObject::connect(plex_view_, &StreamingLibraryView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
   QObject::connect(plex_view_->view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
 #endif
 
 #ifdef HAVE_JELLYFIN
-  QObject::connect(jellyfin_view_, &StreamingTabsView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
+  QObject::connect(jellyfin_view_, &StreamingFavoritesView::OpenSettingsDialog, this, &MainWindow::OpenServiceSettingsDialog);
   QObject::connect(&*app_->streaming_services()->ServiceBySource(Song::Source::Jellyfin), &StreamingService::ShowErrorDialog, this, &MainWindow::ShowErrorDialog);
   QObject::connect(jellyfin_view_->artists_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
   QObject::connect(jellyfin_view_->albums_collection_view(), &StreamingCollectionView::AddToPlaylistSignal, this, &MainWindow::AddToPlaylist);
@@ -906,6 +914,7 @@ MainWindow::MainWindow(Application *app,
   playlist_menu_->addAction(ui_->action_remove_from_playlist);
   playlist_undoredo_ = playlist_menu_->addSeparator();
   playlist_menu_->addAction(ui_->action_edit_track);
+  playlist_edit_lyrics_ = playlist_menu_->addAction(IconLoader::Load(u"view-media-lyrics"_s), tr("Edit lyrics..."), this, &MainWindow::EditLyrics);
   playlist_menu_->addAction(ui_->action_edit_value);
   playlist_menu_->addAction(ui_->action_renumber_tracks);
   playlist_menu_->addAction(ui_->action_selection_set_value);
@@ -999,11 +1008,15 @@ MainWindow::MainWindow(Application *app,
   QObject::connect(&*app_->playlist_manager(), &PlaylistManager::CurrentSongMetadataChanged, context_view_, &ContextView::SongChanged);
   QObject::connect(&*app_->player(), &Player::PlaylistFinished, context_view_, &ContextView::Stopped);
   QObject::connect(&*app_->player(), &Player::Playing, context_view_, &ContextView::Playing);
+  QObject::connect(&*app_->player(), &Player::Paused, context_view_, &ContextView::Paused);
+  QObject::connect(&*app_->player(), &Player::Seeked, context_view_, &ContextView::Seeked);
   QObject::connect(&*app_->player(), &Player::Stopped, context_view_, &ContextView::Stopped);
   QObject::connect(&*app_->player(), &Player::Error, context_view_, &ContextView::Error);
   QObject::connect(this, &MainWindow::AlbumCoverReady, context_view_, &ContextView::AlbumCoverLoaded);
   QObject::connect(this, &MainWindow::SearchCoverInProgress, context_view_->album_widget(), &ContextAlbum::SearchCoverInProgress);
   QObject::connect(context_view_, &ContextView::AlbumEnabledChanged, this, &MainWindow::TabSwitched);
+  QObject::connect(context_view_, &ContextView::SaveLyrics, &*app_->collection(), &CollectionManager::SaveLyrics);
+  QObject::connect(context_view_, &ContextView::EditLyrics, this, &MainWindow::EditSongLyrics);
 
   // Analyzer
   QObject::connect(ui_->analyzer, &AnalyzerContainer::WheelEvent, this, &MainWindow::VolumeWheelEvent);
@@ -1859,7 +1872,8 @@ void MainWindow::ToggleHide() {
 }
 
 void MainWindow::StopAfterCurrent() {
-  app_->playlist_manager()->current()->StopAfter(app_->playlist_manager()->current()->current_row());
+  // The playing playlist, not the playlist which is shown, which can be another playlist.
+  app_->player()->StopAfterCurrent();
   Q_EMIT StopAfterToggled(app_->playlist_manager()->active()->stop_after_current());
 }
 
@@ -2096,7 +2110,8 @@ void MainWindow::AddToPlaylistFromAction(QAction *action) {
     if (!source_index.isValid()) continue;
     PlaylistItemPtr item = app_->playlist_manager()->current()->item_at(source_index.row());
     if (!item) continue;
-    items << item;
+    // Insert copies, so the items are not shared between the playlists, or between rows when adding to the current playlist.
+    items << item->Copy();
     songs << item->EffectiveMetadata();
   }
 
@@ -2137,8 +2152,10 @@ void MainWindow::ShowPlaylistContextMenu(const QPoint global_pos, const QModelIn
 
   playlist_menu_index_ = source_index;
 
+  const bool is_current_row = source_index.isValid() && IsActivePlaylistCurrentRow(source_index.row());
+
   // Is this song currently playing?
-  if (app_->playlist_manager()->current()->current_row() == source_index.row() && app_->player()->GetState() == EngineBase::State::Playing) {
+  if (is_current_row && app_->player()->GetState() == EngineBase::State::Playing) {
     playlist_play_pause_->setText(tr("Pause"));
     playlist_play_pause_->setIcon(IconLoader::Load(u"media-playback-pause"_s));
   }
@@ -2149,7 +2166,7 @@ void MainWindow::ShowPlaylistContextMenu(const QPoint global_pos, const QModelIn
 
   // Are we allowed to pause?
   if (source_index.isValid()) {
-    playlist_play_pause_->setEnabled(app_->playlist_manager()->current()->current_row() != source_index.row() || !(app_->playlist_manager()->current()->item_at(source_index.row())->options() & PlaylistItem::Option::PauseDisabled));
+    playlist_play_pause_->setEnabled(!is_current_row || !(app_->playlist_manager()->current()->item_at(source_index.row())->options() & PlaylistItem::Option::PauseDisabled));
   }
   else {
     playlist_play_pause_->setEnabled(false);
@@ -2203,6 +2220,8 @@ void MainWindow::ShowPlaylistContextMenu(const QPoint global_pos, const QModelIn
   // this is available when we have one or many files and at least one of those is not CUE related
   ui_->action_edit_track->setEnabled(local_songs > 0 && editable > 0);
   ui_->action_edit_track->setVisible(local_songs > 0 && editable > 0);
+  playlist_edit_lyrics_->setEnabled(local_songs > 0 && editable > 0);
+  playlist_edit_lyrics_->setVisible(local_songs > 0 && editable > 0);
 #ifdef HAVE_TAGFETCHER
   ui_->action_auto_complete_tags->setEnabled(local_songs > 0 && editable > 0);
   ui_->action_auto_complete_tags->setVisible(local_songs > 0 && editable > 0);
@@ -2317,38 +2336,39 @@ void MainWindow::ShowPlaylistContextMenu(const QPoint global_pos, const QModelIn
     playlist_menu_->insertActions(playlistitem_actions_separator_, playlistitem_actions_);
   }
 
-  // If it isn't the first time we right click, we need to remove the menu previously created
-  if (playlist_add_to_another_ != nullptr) {
-    playlist_menu_->removeAction(playlist_add_to_another_);
-    delete playlist_add_to_another_;
-    playlist_add_to_another_ = nullptr;
+  // If it isn't the first time we right click, we need to remove the menu previously created.
+  // Delete the whole menu, with the actions in it, deleting only its menu action leaves the menu and its actions.
+  if (playlist_add_to_another_menu_) {
+    playlist_menu_->removeAction(playlist_add_to_another_menu_->menuAction());
+    playlist_add_to_another_menu_->deleteLater();
+    playlist_add_to_another_menu_ = nullptr;
   }
 
   // Create the playlist submenu if songs are selected.
   if (selected > 0) {
-    QMenu *add_to_another_menu = new QMenu(tr("Add to another playlist"), this);
-    add_to_another_menu->setIcon(IconLoader::Load(u"list-add"_s));
+    playlist_add_to_another_menu_ = new QMenu(tr("Add to another playlist"), playlist_menu_);
+    playlist_add_to_another_menu_->setIcon(IconLoader::Load(u"list-add"_s));
 
     const QList<int> playlist_ids = app_->playlist_manager()->playlist_ids();
     for (const int playlist_id : playlist_ids) {
       // Don't add the current playlist
       if (playlist_id != app_->playlist_manager()->current()->id()) {
-        QAction *existing_playlist = new QAction(this);
+        QAction *existing_playlist = new QAction(playlist_add_to_another_menu_);
         existing_playlist->setText(app_->playlist_manager()->playlist_name(playlist_id));
         existing_playlist->setData(playlist_id);
-        add_to_another_menu->addAction(existing_playlist);
+        playlist_add_to_another_menu_->addAction(existing_playlist);
       }
     }
 
-    add_to_another_menu->addSeparator();
+    playlist_add_to_another_menu_->addSeparator();
     // Add to a new playlist
-    QAction *new_playlist = new QAction(this);
+    QAction *new_playlist = new QAction(playlist_add_to_another_menu_);
     new_playlist->setText(tr("New playlist"));
     new_playlist->setData(-1);  // fake id
-    add_to_another_menu->addAction(new_playlist);
-    playlist_add_to_another_ = playlist_menu_->insertMenu(ui_->action_remove_from_playlist, add_to_another_menu);
+    playlist_add_to_another_menu_->addAction(new_playlist);
+    playlist_menu_->insertMenu(ui_->action_remove_from_playlist, playlist_add_to_another_menu_);
 
-    QObject::connect(add_to_another_menu, &QMenu::triggered, this, &MainWindow::AddToPlaylistFromAction);
+    QObject::connect(playlist_add_to_another_menu_, &QMenu::triggered, this, &MainWindow::AddToPlaylistFromAction);
 
   }
 
@@ -2356,9 +2376,17 @@ void MainWindow::ShowPlaylistContextMenu(const QPoint global_pos, const QModelIn
 
 }
 
+bool MainWindow::IsActivePlaylistCurrentRow(const int row) const {
+
+  // The visible playlist also has a current row when it's not the playing playlist, it's only the playing song in the active playlist.
+  Playlist *playlist = app_->playlist_manager()->current();
+  return playlist == app_->playlist_manager()->active() && playlist->current_row() == row;
+
+}
+
 void MainWindow::PlaylistPlay() {
 
-  if (app_->playlist_manager()->current()->current_row() == playlist_menu_index_.row()) {
+  if (playlist_menu_index_.isValid() && IsActivePlaylistCurrentRow(playlist_menu_index_.row())) {
     app_->player()->PlayPause(0, Playlist::AutoScroll::Never);
   }
   else {
@@ -2396,10 +2424,7 @@ void MainWindow::RescanSongs() {
 
 }
 
-void MainWindow::EditTracks() {
-
-  SongList songs;
-  PlaylistItemPtrList items;
+bool MainWindow::GetSelectedPlaylistSongs(SongList *songs, PlaylistItemPtrList *items) const {
 
   const QModelIndexList proxy_indexes = ui_->playlist->view()->selectionModel()->selectedRows();
   for (const QModelIndex &proxy_index : proxy_indexes) {
@@ -2409,29 +2434,102 @@ void MainWindow::EditTracks() {
     if (!item) continue;
     Song song = item->OriginalMetadata();
     if (song.IsEditable()) {
-      songs << song;
-      items << item;
+      *songs << song;
+      *items << item;
     }
   }
 
-  if (items.isEmpty()) return;
-
-  edit_tag_dialog_->SetSongs(songs, items);
-  edit_tag_dialog_->show();
-  edit_tag_dialog_->raise();
+  return !items->isEmpty();
 
 }
 
-void MainWindow::EditTagDialogAccepted() {
+void MainWindow::EditTracks() {
 
-  const PlaylistItemPtrList items = edit_tag_dialog_->playlist_items();
-  const SongList songs = edit_tag_dialog_->songs();
+  SongList songs;
+  PlaylistItemPtrList items;
+  if (!GetSelectedPlaylistSongs(&songs, &items)) return;
 
-  if (items.count() != songs.count()) {
+  // The dialog is not modal, so the current playlist can change before it is accepted.
+  // It keeps the previous songs while it is loading or saving them, then they are still from the previous playlist, and these are set when it's finished.
+  if (tag_editor_->SetSongs(songs, items)) {
+    tag_editor_playlist_ = app_->playlist_manager()->current();
+  }
+  else {
+    tag_editor_pending_playlist_ = app_->playlist_manager()->current();
+  }
+  tag_editor_->show();
+  tag_editor_->raise();
+
+}
+
+void MainWindow::TagEditorAccepted() {
+
+  UpdateEditedPlaylistItems(&*tag_editor_, tag_editor_playlist_);
+
+}
+
+void MainWindow::EditLyrics() {
+
+  SongList songs;
+  PlaylistItemPtrList items;
+  if (!GetSelectedPlaylistSongs(&songs, &items)) return;
+
+  // Like the tag editor, the songs set while it's loading or saving are set when it's finished, then they are still from the previous playlist.
+  if (lyrics_editor_->SetSongs(songs, items)) {
+    lyrics_editor_playlist_ = app_->playlist_manager()->current();
+  }
+  else {
+    lyrics_editor_pending_playlist_ = app_->playlist_manager()->current();
+  }
+  lyrics_editor_->show();
+  lyrics_editor_->raise();
+
+}
+
+void MainWindow::EditSongLyrics(const Song &song) {
+
+  // The song playing in the context, use its playlist item when it's still the current item, so the playlist is updated when the lyrics are saved.
+  SongList songs;
+  PlaylistItemPtrList items;
+  Playlist *playlist = nullptr;
+  PlaylistItemPtr item = app_->player()->GetCurrentItem();
+  if (item && item->OriginalMetadata().url() == song.url() && item->OriginalMetadata().beginning_nanosec() == song.beginning_nanosec()) {
+    songs << item->OriginalMetadata();
+    items << item;
+    playlist = app_->playlist_manager()->active();
+  }
+  else {
+    songs << song;
+  }
+
+  if (lyrics_editor_->SetSongs(songs, items)) {
+    lyrics_editor_playlist_ = playlist;
+  }
+  else {
+    lyrics_editor_pending_playlist_ = playlist;
+  }
+  lyrics_editor_->show();
+  lyrics_editor_->raise();
+
+}
+
+void MainWindow::LyricsEditorAccepted() {
+
+  UpdateEditedPlaylistItems(&*lyrics_editor_, lyrics_editor_playlist_);
+
+}
+
+void MainWindow::UpdateEditedPlaylistItems(SongEditor *song_editor, Playlist *playlist) {
+
+  const PlaylistItemPtrList items = song_editor->playlist_items();
+  const SongList songs = song_editor->songs();
+  const SongList original_songs = song_editor->original_songs();
+
+  if (items.count() != songs.count() || original_songs.count() != songs.count()) {
     return;
   }
 
-  Playlist *playlist = app_->playlist_manager()->current();
+  // Update the playlist the songs were edited from, not the current playlist.
   if (!playlist) {
     return;
   }
@@ -2440,11 +2538,42 @@ void MainWindow::EditTagDialogAccepted() {
   for (int i = 0; i < items.count(); ++i) {
     PlaylistItemPtr item = items.at(i);
     const Song &updated_song = songs.at(i);
-    // For stream tracks, apply the metadata directly since there's no file to reload from.
-    if (updated_song.is_stream_service()) {
-      playlist->UpdateItemMetadata(item, updated_song, false);
+    // For stream tracks, including radio streams, apply the metadata directly since there's no file to reload from.
+    // Only the fields edited in the dialog are changed, since the metadata can have changed while the dialog was open.
+    if (updated_song.is_stream()) {
+      const Song &dialog_original_song = original_songs.at(i);
+      const Song original_song = Song::SongWithEditedFields(dialog_original_song, updated_song, item->OriginalMetadata());
+      if (item->HasStreamMetadata()) {
+        // Updating the original metadata would replace the metadata of what is playing on the stream now, and the stream URL it resolved to, so only the edited fields are changed in it too.
+        const Song stream_song = Song::SongWithEditedFields(dialog_original_song, updated_song, item->EffectiveMetadata());
+        item->SetOriginalMetadata(original_song);
+        playlist->UpdateItemMetadata(item, stream_song, true);
+      }
+      else {
+        playlist->UpdateItemMetadata(item, original_song, false);
+      }
       continue;
     }
+    // Reloading reads the tags again, but the lyrics stored in the database or in an LRC file are taken from the item, so the item gets the saved lyrics first, otherwise the reload would bring back the lyrics from before saving.
+    // Only the edited lyrics are set, the item can have newer lyrics from elsewhere, and the editor reverts the lyrics which could not be saved.
+    const Song &dialog_original_song = original_songs.at(i);
+    const bool lyrics_edited = updated_song.lyrics() != dialog_original_song.lyrics() || updated_song.lyrics_storage_type() != dialog_original_song.lyrics_storage_type();
+    const bool synced_lyrics_edited = updated_song.synced_lyrics() != dialog_original_song.synced_lyrics() || updated_song.synced_lyrics_storage_type() != dialog_original_song.synced_lyrics_storage_type();
+    if (lyrics_edited || synced_lyrics_edited) {
+      Song item_song = item->OriginalMetadata();
+      if (lyrics_edited) {
+        item_song.set_lyrics(updated_song.lyrics());
+        item_song.set_lyrics_storage_type(updated_song.lyrics_storage_type());
+      }
+      if (synced_lyrics_edited) {
+        item_song.set_synced_lyrics(updated_song.synced_lyrics());
+        item_song.set_synced_lyrics_storage_type(updated_song.synced_lyrics_storage_type());
+        item_song.set_lrc_mtime(updated_song.lrc_mtime());
+      }
+      // Updated through the playlist, so the views and the context of the current song get the saved lyrics, also when the reload finds nothing else changed.
+      playlist->UpdateItemMetadata(item, item_song, false);
+    }
+
     // The item's row may have shifted since the dialog was opened, and reloading below needs a row rather than just the item.
     const int row = playlist->row_of(item);
     if (row != -1) {
@@ -2504,8 +2633,9 @@ void MainWindow::RenumberTracks() {
 
 void MainWindow::SongSaveComplete(TagReaderReplyPtr reply, const QPersistentModelIndex &idx) {
 
-  if (reply->success() && idx.isValid()) {
-    app_->playlist_manager()->current()->ReloadItems(QList<int>() << idx.row());
+  Playlist *playlist = PlaylistOfIndex(idx);
+  if (reply->success() && playlist) {
+    playlist->ReloadItems(QList<int>() << idx.row());
   }
 
 }
@@ -2827,11 +2957,12 @@ void MainWindow::CommandlineOptionsReceived(const CommandlineOptions &options) {
     app_->player()->SetVolume(static_cast<uint>(qBound(0, static_cast<int>(app_->player()->GetVolume()) + options.volume_modifier(), 100)));
   }
 
+  // Seek to the start instead of wrapping around when the position is negative.
   if (options.seek_to() != -1) {
-    app_->player()->SeekTo(static_cast<quint64>(options.seek_to()));
+    app_->player()->SeekTo(static_cast<quint64>(std::max(0, options.seek_to())));
   }
   else if (options.seek_by() != 0) {
-    app_->player()->SeekTo(static_cast<quint64>(app_->player()->engine()->position_nanosec() / kNsecPerSec + options.seek_by()));
+    app_->player()->SeekTo(static_cast<quint64>(std::max<qint64>(0, app_->player()->engine()->position_nanosec() / kNsecPerSec + options.seek_by())));
   }
 
   if (options.play_track_at() != -1) app_->player()->PlayAt(options.play_track_at(), false, 0, EngineBase::TrackChangeType::Manual, Playlist::AutoScroll::Maybe, true);
@@ -3008,9 +3139,14 @@ void MainWindow::EditFileTags(const QList<QUrl> &urls) {
     songs << song;
   }
 
-  edit_tag_dialog_->SetSongs(songs);
-  edit_tag_dialog_->show();
-  edit_tag_dialog_->raise();
+  if (tag_editor_->SetSongs(songs)) {
+    tag_editor_playlist_.clear();
+  }
+  else {
+    tag_editor_pending_playlist_.clear();
+  }
+  tag_editor_->show();
+  tag_editor_->raise();
 
 }
 
@@ -3177,7 +3313,7 @@ void MainWindow::ShowEqualizer() {
 SettingsDialog *MainWindow::CreateSettingsDialog() {
 
   SettingsDialog *settings_dialog = new SettingsDialog(app_->player(),
-                                                       app_->device_finders(),
+                                                       app_->audio_device_listers(),
                                                        app_->collection(),
                                                        app_->cover_providers(),
                                                        app_->lyrics_providers(),
@@ -3211,12 +3347,31 @@ void MainWindow::OpenSettingsDialogAtPage(const SettingsDialog::Page page) {
   settings_dialog_->OpenAtPage(page);
 }
 
-EditTagDialog *MainWindow::CreateEditTagDialog() {
+TagEditor *MainWindow::CreateTagEditor() {
 
-  EditTagDialog *edit_tag_dialog = new EditTagDialog(app_->network(), app_->tagreader_client(), app_->collection_backend(), app_->albumcover_loader(), app_->current_albumcover_loader(), app_->cover_providers(), app_->lyrics_providers(), app_->streaming_services());
-  QObject::connect(edit_tag_dialog, &EditTagDialog::accepted, this, &MainWindow::EditTagDialogAccepted);
-  QObject::connect(edit_tag_dialog, &EditTagDialog::Error, this, &MainWindow::ShowErrorDialog);
-  return edit_tag_dialog;
+  TagEditor *tag_editor = new TagEditor(app_->network(), app_->tagreader_client(), app_->collection_backend(), app_->albumcover_loader(), app_->current_albumcover_loader(), app_->cover_providers(), app_->lyrics_providers(), app_->streaming_services());
+  QObject::connect(tag_editor, &TagEditor::accepted, this, &MainWindow::TagEditorAccepted);
+  QObject::connect(tag_editor, &TagEditor::Error, this, &MainWindow::ShowErrorDialog);
+  // The songs set while the dialog was loading or saving were set now, they are from the playlist they were set from.
+  QObject::connect(tag_editor, &TagEditor::PendingSongsSet, this, [this]() {
+    tag_editor_playlist_ = tag_editor_pending_playlist_;
+    tag_editor_pending_playlist_.clear();
+  });
+  return tag_editor;
+
+}
+
+LyricsEditor *MainWindow::CreateLyricsEditor() {
+
+  LyricsEditor *lyrics_editor = new LyricsEditor(app_->tagreader_client(), app_->collection_backend(), app_->lyrics_providers());
+  QObject::connect(lyrics_editor, &LyricsEditor::accepted, this, &MainWindow::LyricsEditorAccepted);
+  QObject::connect(lyrics_editor, &LyricsEditor::Error, this, &MainWindow::ShowErrorDialog);
+  // The songs set while the lyrics editor was loading or saving were set now, they are from the playlist they were set from.
+  QObject::connect(lyrics_editor, &LyricsEditor::PendingSongsSet, this, [this]() {
+    lyrics_editor_playlist_ = lyrics_editor_pending_playlist_;
+    lyrics_editor_pending_playlist_.clear();
+  });
+  return lyrics_editor;
 
 }
 
@@ -3593,13 +3748,13 @@ void MainWindow::PlaylistDelete() {
 
 }
 
-void MainWindow::DeleteFilesFinished(const SongList &songs_with_errors) {
+void MainWindow::DeleteFilesFinished(const SongList &songs_with_errors, const QStringList &log) {
 
-  if (songs_with_errors.isEmpty()) return;
+  if (songs_with_errors.isEmpty() && log.isEmpty()) return;
 
   OrganizeErrorDialog *dialog = new OrganizeErrorDialog(this);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
-  dialog->Show(OrganizeErrorDialog::OperationType::Delete, songs_with_errors);
+  dialog->Show(OrganizeErrorDialog::OperationType::Delete, songs_with_errors, log);
 
 }
 
@@ -3712,8 +3867,9 @@ void MainWindow::ProcessMetadataQueue() {
       QobuzMetadataRequest *request = new QobuzMetadataRequest(&*qobuz_service, qobuz_service->network(), this);
       QObject::connect(request, &QobuzMetadataRequest::MetadataReceived, this, [this, metadata_queue_entry, request](const QString &received_track_id, const Song &fetched_song) {
         Q_UNUSED(received_track_id);
-        if (metadata_queue_entry.persistent_index.isValid() && fetched_song.is_valid()) {
-          PlaylistItemPtr playlist_item = app_->playlist_manager()->current()->item_at(metadata_queue_entry.persistent_index.row());
+        Playlist *playlist = PlaylistOfIndex(metadata_queue_entry.persistent_index);
+        if (playlist && fetched_song.is_valid()) {
+          PlaylistItemPtr playlist_item = playlist->item_at(metadata_queue_entry.persistent_index.row());
           if (playlist_item) {
             const Song old_song = playlist_item->OriginalMetadata();
             Song updated_song = old_song;
@@ -3731,7 +3887,7 @@ void MainWindow::ProcessMetadataQueue() {
             if (fetched_song.year() > 0) updated_song.set_year(fetched_song.year());
             if (fetched_song.length_nanosec() > 0) updated_song.set_length_nanosec(fetched_song.length_nanosec());
             if (fetched_song.art_automatic().isValid()) updated_song.set_art_automatic(fetched_song.art_automatic());
-            app_->playlist_manager()->current()->UpdateItemMetadata(metadata_queue_entry.persistent_index.row(), playlist_item, updated_song, false);
+            playlist->UpdateItemMetadata(metadata_queue_entry.persistent_index.row(), playlist_item, updated_song, false);
           }
         }
         request->deleteLater();
@@ -3761,8 +3917,9 @@ void MainWindow::ProcessMetadataQueue() {
       SpotifyMetadataRequest *request = new SpotifyMetadataRequest(&*spotify_service, app_->network(), this);
       QObject::connect(request, &SpotifyMetadataRequest::MetadataReceived, this, [this, metadata_queue_entry, request](const QString &received_track_id, const Song &fetched_song) {
         Q_UNUSED(received_track_id);
-        if (metadata_queue_entry.persistent_index.isValid() && fetched_song.is_valid()) {
-          PlaylistItemPtr playlist_item = app_->playlist_manager()->current()->item_at(metadata_queue_entry.persistent_index.row());
+        Playlist *playlist = PlaylistOfIndex(metadata_queue_entry.persistent_index);
+        if (playlist && fetched_song.is_valid()) {
+          PlaylistItemPtr playlist_item = playlist->item_at(metadata_queue_entry.persistent_index.row());
           if (playlist_item) {
             const Song old_song = playlist_item->OriginalMetadata();
             Song updated_song = old_song;
@@ -3780,7 +3937,7 @@ void MainWindow::ProcessMetadataQueue() {
             if (fetched_song.year() > 0) updated_song.set_year(fetched_song.year());
             if (fetched_song.length_nanosec() > 0) updated_song.set_length_nanosec(fetched_song.length_nanosec());
             if (fetched_song.art_automatic().isValid()) updated_song.set_art_automatic(fetched_song.art_automatic());
-            app_->playlist_manager()->current()->UpdateItemMetadata(metadata_queue_entry.persistent_index.row(), playlist_item, updated_song, false);
+            playlist->UpdateItemMetadata(metadata_queue_entry.persistent_index.row(), playlist_item, updated_song, false);
           }
         }
         request->deleteLater();

@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2023, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,6 +31,7 @@
 #include <QList>
 #include <QListWidgetItem>
 #include <QMap>
+#include <QHash>
 #include <QMultiMap>
 #include <QQueue>
 #include <QString>
@@ -80,6 +81,8 @@ class AlbumItem : public QListWidgetItem {
 class AlbumCoverManager : public QMainWindow {
   Q_OBJECT
 
+  friend class AlbumCoverManagerTest;
+
  public:
   explicit AlbumCoverManager(const SharedPtr<NetworkAccessManager> network,
                              const SharedPtr<CollectionBackend> collection_backend,
@@ -126,7 +129,8 @@ class AlbumCoverManager : public QMainWindow {
     Role_Filetype,
     Role_CuePath,
     Role_ImageData,
-    Role_Image
+    Role_Image,
+    Role_CoverLoaded
   };
 
   enum class HideCovers {
@@ -150,6 +154,8 @@ class AlbumCoverManager : public QMainWindow {
 
   void QueueAlbumCoverLoad(AlbumItem *album_item);
   void LoadAlbumCoverAsync(AlbumItem *album_item);
+  // Cancels loading the thumbnail of the album, a thumbnail which was loaded before the cover was changed would show the old cover.
+  void CancelAlbumCoverLoading(AlbumItem *album_item);
 
   void UpdateStatusText();
   bool ShouldHide(const AlbumItem &album_item, const QString &filter, const HideCovers hide_covers) const;
@@ -160,6 +166,7 @@ class AlbumCoverManager : public QMainWindow {
   SongList GetSongsInAlbums(const QModelIndexList &indexes) const;
   SongMimeData *GetMimeDataForAlbums(const QModelIndexList &indexes) const;
 
+  // Until the thumbnail is loaded, the album is checked for a cover instead of the thumbnail.
   bool ItemHasCover(const AlbumItem &album_item) const;
 
  Q_SIGNALS:
@@ -175,6 +182,8 @@ class AlbumCoverManager : public QMainWindow {
   void ExportCovers();
   void AlbumCoverFetched(const quint64 id, const AlbumCoverImageResult &result, const CoverSearchStatistics &statistics);
   void CancelRequests();
+  // Aborts fetching and exporting covers, the thumbnails are still loaded, since whether the albums have covers is only known when they are loaded.
+  void AbortRequests();
 
   // On the context menu
   void FetchSingleCover();
@@ -196,7 +205,7 @@ class AlbumCoverManager : public QMainWindow {
   void UpdateCoverInList(AlbumItem *album_item, const QUrl &cover);
   void UpdateExportStatus(const int exported, const int skipped, const int max);
 
-  void SaveEmbeddedCoverFinished(TagReaderReplyPtr reply, AlbumItem *album_item, const QUrl &url, const bool art_embedded);
+  void SaveEmbeddedCoverFinished(TagReaderReplyPtr reply, AlbumItem *album_item, const QUrl &url, bool art_embedded);
 
  private:
   Ui_CoverManager *ui_;
@@ -239,6 +248,7 @@ class AlbumCoverManager : public QMainWindow {
   int jobs_;
 
   QMultiMap<AlbumItem*, QUrl> cover_save_tasks_;
+  QHash<AlbumItem*, bool> cover_save_results_;
 
   QListWidgetItem *all_artists_;
 

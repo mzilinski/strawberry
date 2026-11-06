@@ -47,9 +47,9 @@
 #include "core/player.h"
 #include "core/urlhandlers.h"
 #include "credentialsmanager/credentialsmanager.h"
-#include "engine/devicefinders.h"
+#include "engine/audiodevicelisters.h"
 #include "tagreader/tagreaderclient.h"
-#include "collection/collectionlibrary.h"
+#include "collection/collectionmanager.h"
 #include "playlist/playlistbackend.h"
 #include "playlist/playlistmanager.h"
 #include "device/devicemanager.h"
@@ -146,10 +146,10 @@ class ApplicationImpl {
         player_([app]() { return new Player(app->task_manager(), app->url_handlers(), app->playlist_manager()); }),
         network_([]() { return new NetworkAccessManager(); }),
         credentials_manager_([]() { return new CredentialsManager(); }),
-        device_finders_([]() { return new DeviceFinders(); }),
+        audio_device_listers_([]() { return new AudioDeviceListers(); }),
         url_handlers_([]() { return new UrlHandlers(); }),
         device_manager_([app]() { return new DeviceManager(app->task_manager(), app->database(), app->tagreader_client(), app->albumcover_loader()); }),
-        collection_([app]() { return new CollectionLibrary(app->database(), app->task_manager(), app->tagreader_client(), app->albumcover_loader()); }),
+        collection_([app]() { return new CollectionManager(app->database(), app->task_manager(), app->tagreader_client(), app->albumcover_loader()); }),
         playlist_backend_([this, app]() {
           PlaylistBackend *playlist_backend = new PlaylistBackend(app->database(), app->tagreader_client(), app->collection_backend());
           app->MoveToThread(playlist_backend, database_->thread());
@@ -248,10 +248,10 @@ class ApplicationImpl {
   Lazy<Player> player_;
   Lazy<NetworkAccessManager> network_;
   Lazy<CredentialsManager> credentials_manager_;
-  Lazy<DeviceFinders> device_finders_;
+  Lazy<AudioDeviceListers> audio_device_listers_;
   Lazy<UrlHandlers> url_handlers_;
   Lazy<DeviceManager> device_manager_;
-  Lazy<CollectionLibrary> collection_;
+  Lazy<CollectionManager> collection_;
   Lazy<PlaylistBackend> playlist_backend_;
   Lazy<PlaylistManager> playlist_manager_;
   Lazy<CoverProviders> cover_providers_;
@@ -284,7 +284,7 @@ Application::Application(QObject *parent)
     g_thread_ = g_thread_new(nullptr, Application::GLibMainLoopThreadFunc, nullptr);
   }
 
-  device_finders()->Init();
+  audio_device_listers()->Init();
   collection()->Init();
   tagreader_client();
 
@@ -352,14 +352,24 @@ void Application::Exit() {
                  << &*streaming_services()
                  << &*radio_services()->radio_backend();
 
+  // The tagreader exits after the collection, which saves the playcounts, ratings and lyrics deferred for the playing song when exiting.
+  // Reading files is not needed anymore, so a large number of queued reads doesn't delay the writes and exiting.
+  tagreader_client()->AbortReads();
   QObject::connect(&*tagreader_client(), &TagReaderClient::ExitFinished, this, &Application::ExitReceived);
-  tagreader_client()->ExitAsync();
 
-  QObject::connect(&*collection(), &CollectionLibrary::ExitFinished, this, &Application::ExitReceived);
+  QObject::connect(&*collection(), &CollectionManager::ExitFinished, this, &Application::ExitReceived);
   collection()->Exit();
 
+  // The playlists are saved by a timer, save the changes made just before exiting before the playlist backend exits.
+  // Playlists still being restored are saved when they are restored, so the playlist backend exits after that.
   QObject::connect(&*playlist_backend(), &PlaylistBackend::ExitFinished, this, &Application::ExitReceived);
-  playlist_backend()->ExitAsync();
+  if (p_->playlist_manager_) {
+    QObject::connect(&*playlist_manager(), &PlaylistManager::PendingPlaylistsSaved, this, [this]() { playlist_backend()->ExitAsync(); }, Qt::SingleShotConnection);
+    playlist_manager()->SavePendingPlaylistsAsync();
+  }
+  else {
+    playlist_backend()->ExitAsync();
+  }
 
   QObject::connect(&*albumcover_loader(), &AlbumCoverLoader::ExitFinished, this, &Application::ExitReceived);
   albumcover_loader()->ExitAsync();
@@ -383,6 +393,11 @@ void Application::ExitReceived() {
   qLog(Debug) << obj << "successfully exited.";
 
   wait_for_exit_.removeAll(obj);
+
+  if (obj == &*collection()) {
+    tagreader_client()->ExitAsync();
+  }
+
   if (wait_for_exit_.isEmpty()) {
     database()->Close();
     QObject::connect(&*database(), &Database::ExitFinished, this, &Application::ExitFinished);
@@ -397,10 +412,10 @@ SharedPtr<TaskManager> Application::task_manager() const { return p_->task_manag
 SharedPtr<Player> Application::player() const { return p_->player_.ptr(); }
 SharedPtr<NetworkAccessManager> Application::network() const { return p_->network_.ptr(); }
 SharedPtr<CredentialsManager> Application::credentials_manager() const { return p_->credentials_manager_.ptr(); }
-SharedPtr<DeviceFinders> Application::device_finders() const { return p_->device_finders_.ptr(); }
+SharedPtr<AudioDeviceListers> Application::audio_device_listers() const { return p_->audio_device_listers_.ptr(); }
 SharedPtr<UrlHandlers> Application::url_handlers() const { return p_->url_handlers_.ptr(); }
 SharedPtr<DeviceManager> Application::device_manager() const { return p_->device_manager_.ptr(); }
-SharedPtr<CollectionLibrary> Application::collection() const { return p_->collection_.ptr(); }
+SharedPtr<CollectionManager> Application::collection() const { return p_->collection_.ptr(); }
 SharedPtr<CollectionBackend> Application::collection_backend() const { return collection()->backend(); }
 CollectionModel *Application::collection_model() const { return collection()->model(); }
 SharedPtr<AlbumCoverLoader> Application::albumcover_loader() const { return p_->albumcover_loader_.ptr(); }

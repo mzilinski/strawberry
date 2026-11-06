@@ -136,6 +136,26 @@ PlexService::~PlexService() {
 
 }
 
+SharedPtr<CollectionBackend> PlexService::collection_backend() const {
+  return collection_backend_;
+}
+
+CollectionModel *PlexService::collection_model() const {
+  return collection_model_;
+}
+
+SharedPtr<CollectionBackend> PlexService::songs_collection_backend() {
+  return collection_backend_;
+}
+
+CollectionModel *PlexService::songs_collection_model() {
+  return collection_model_;
+}
+
+CollectionFilter *PlexService::songs_collection_filter_model() {
+  return collection_model_->filter();
+}
+
 void PlexService::Exit() {
 
   QObject::connect(&*collection_backend_, &CollectionBackend::ExitFinished, this, &PlexService::ExitFinished);
@@ -259,7 +279,7 @@ void PlexService::HandlePinReply(QNetworkReply *reply) {
   reply->deleteLater();
 
   if (reply->error() != QNetworkReply::NoError) {
-    AuthenticationError(QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+    AuthenticationError(QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error())));
     return;
   }
 
@@ -324,7 +344,7 @@ void PlexService::HandlePollPinReply(QNetworkReply *reply) {
 
   if (reply->error() != QNetworkReply::NoError) {
     CancelAuthentication();
-    AuthenticationError(QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+    AuthenticationError(QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error())));
     return;
   }
 
@@ -747,7 +767,7 @@ void PlexService::HandlePingReply(QNetworkReply *reply) {
   reply->deleteLater();
 
   if (reply->error() != QNetworkReply::NoError) {
-    PingError(QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+    PingError(QStringLiteral("%1 (%2)").arg(reply->errorString(), QString::number(reply->error())));
     return;
   }
 

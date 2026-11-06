@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation>Stöd för sorteringstaggar för artist, album, albumartist, titel, kompositör och medverkande</translation>
@@ -1361,15 +1361,7 @@ Om det inte finns några träffar används den största bilden i mappen.</transl
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Din samling är tom!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Klicka här för att lägga till musik</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Lägg till i aktuell spellista</translation>
@@ -1393,6 +1385,17 @@ Om det inte finns några träffar används den största bilden i mappen.</transl
     <message>
       <source>Search for this</source>
       <translation>Sök efter det här</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Din samling är tom!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Klicka här för att lägga till musik</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ Om det inte finns några träffar används den största bilden i mappen.</transl
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Komplettera låttexter automatiskt</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Låttexter</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(skiljer sig mellan flera låtar)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Låttexter</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Föregående</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Nästa</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Sparar spår</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Det gick inte att skriva metadata till %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Det gick inte att skriva metadata till %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Läser in spår</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>läser in…</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Hittades inte.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Redigera spårinformation</translation>
@@ -7070,26 +7127,6 @@ Are you sure you want to continue?</source>
       <translation>Klicka här för att hämta musik</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Lägg till i aktuell spellista</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Ersätt aktuell spellista</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Öppna i ny spellista</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Lägg till spår i kön</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Lägg till i kön för att spela som nästa</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Ta bort från favoriter</translation>
     </message>
@@ -7111,6 +7148,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>Uppdatera katalogen</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Vy med strömningsflikar</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Artister</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Album</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Låtar</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Sök</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Anpassa %1…</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Anpassa %1…</translation>
     </message>
   </context>
   <context>
@@ -7185,40 +7256,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>Gruppera efter</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Anpassa %1…</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Vy med strömningsflikar</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Artister</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Album</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Låtar</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Sök</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Anpassa %1…</translation>
     </message>
   </context>
   <context>

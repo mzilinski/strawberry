@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,6 +23,8 @@
 #define TRANSCODER_H
 
 #include "config.h"
+
+#include <atomic>
 
 #include <glib.h>
 #include <glib-object.h>
@@ -53,6 +55,8 @@ Q_DECLARE_METATYPE(TranscoderPreset)
 
 class Transcoder : public QObject {
   Q_OBJECT
+
+  friend class TranscoderTest;
 
  public:
   explicit Transcoder(QObject *parent = nullptr, const QString &settings_postfix = QLatin1String(""));
@@ -92,20 +96,24 @@ class Transcoder : public QObject {
 
   // State held by a job and shared across gstreamer callbacks - lives in the job's thread.
   struct JobState {
-    explicit JobState(const Job &job, Transcoder *parent)
-        : job_(job),
+    explicit JobState(const quint64 id, const Job &job, Transcoder *parent)
+        : id_(id),
+          job_(job),
           parent_(parent),
           pipeline_(nullptr),
-          convert_element_(nullptr) {}
+          convert_element_(nullptr),
+          finished_posted_(false) {}
     ~JobState();
 
     void PostFinished(const bool success);
     void ReportError(GstMessage *msg) const;
 
+    const quint64 id_;
     Job job_;
     Transcoder *parent_;
     GstElement *pipeline_;
     GstElement *convert_element_;
+    std::atomic<bool> finished_posted_;
 
    private:
     Q_DISABLE_COPY(JobState)
@@ -113,11 +121,12 @@ class Transcoder : public QObject {
 
   // Event passed from a GStreamer callback to the Transcoder when a job finishes.
   struct JobFinishedEvent : public QEvent {
-    explicit JobFinishedEvent(JobState *state, bool success);
+    explicit JobFinishedEvent(const quint64 job_id, const bool success);
 
     static int sEventType;
 
-    JobState *state_;
+    // The job is identified by its ID, not by a pointer to its state, since the state can be freed before the event is handled, and a new state can be allocated at the same address.
+    quint64 job_id_;
     bool success_;
 
    private:
@@ -145,6 +154,7 @@ class Transcoder : public QObject {
   using JobStateList = QList<SharedPtr<JobState>>;
 
   int max_threads_;
+  quint64 next_job_id_;
   QList<Job> queued_jobs_;
   JobStateList current_jobs_;
   QString settings_postfix_;

@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2019-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -163,13 +163,12 @@ bool MtpDevice::StartCopy(QList<Song::FileType> *supported_types) {
   // Ensure only one "organize files" can be active at any one time
   db_busy_.lock();
 
+  // The caller always calls FinishCopy(), also when this fails, which unlocks db_busy_, so don't call it here.
   if (!connection_ || !connection_->is_valid()) return false;
 
   // Did the caller want a list of supported types?
   if (supported_types) {
     if (!GetSupportedFiletypes(supported_types, connection_->device())) {
-      QString error_text;
-      FinishCopy(false, error_text);
       return false;
     }
   }
@@ -215,9 +214,12 @@ bool MtpDevice::CopyToStorage(const CopyJob &job, QString &error_text) {
   metadata_on_device.set_albumartist(""_L1);
   songs_to_add_ << metadata_on_device;
 
-  // Remove the original if requested
-  if (job.remove_original_) {
-    if (!QFile::remove(job.source_)) return false;
+  // Remove the original if requested.
+  // The track is on the device now, so it's added to the collection even when this fails, but the move failed.
+  if (job.remove_original_ && !QFile::remove(job.original())) {
+    error_text = tr("Could not remove original file %1").arg(job.original());
+    qLog(Error) << error_text;
+    return false;
   }
 
   return true;
@@ -226,10 +228,9 @@ bool MtpDevice::CopyToStorage(const CopyJob &job, QString &error_text) {
 
 bool MtpDevice::FinishCopy(const bool success, QString &error_text) {
 
-  if (success) {
-    if (!songs_to_add_.isEmpty()) collection_backend_->AddOrUpdateSongs(songs_to_add_);
-    if (!songs_to_remove_.isEmpty()) collection_backend_->DeleteSongs(songs_to_remove_);
-  }
+  // Update the collection with the tracks which were sent or deleted, also when others failed, since they are on the device or removed from it.
+  if (!songs_to_add_.isEmpty()) collection_backend_->AddOrUpdateSongs(songs_to_add_);
+  if (!songs_to_remove_.isEmpty()) collection_backend_->DeleteSongs(songs_to_remove_);
 
   songs_to_add_.clear();
   songs_to_remove_.clear();
@@ -273,6 +274,13 @@ bool MtpDevice::FinishDelete(const bool success, QString &error_text) { return F
 bool MtpDevice::GetSupportedFiletypes(QList<Song::FileType> *ret) {
 
   QMutexLocker l(&db_busy_);
+
+  // Use the connection the device already holds, many MTP devices only allow one connection at a time.
+  if (connection_ && connection_->is_valid()) {
+    return GetSupportedFiletypes(ret, connection_->device());
+  }
+
+  // There's no connection, for example when loading the device failed, so open one only for this.
   MtpConnection connection(url_);
 
   if (!connection.is_valid()) {

@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2019-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@
 #include "core/song.h"
 #include "core/settings.h"
 #include "core/urlhandlers.h"
-#include "streaming/streamingsearchview.h"
+#include "utilities/strutils.h"
 #include "collection/collectionbackend.h"
 #include "collection/collectionmodel.h"
 #include "qobuzservice.h"
@@ -173,6 +173,42 @@ QobuzService::~QobuzService() {
   albums_collection_backend_.reset();
   songs_collection_backend_.reset();
 
+}
+
+SharedPtr<CollectionBackend> QobuzService::artists_collection_backend() {
+  return artists_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> QobuzService::albums_collection_backend() {
+  return albums_collection_backend_;
+}
+
+SharedPtr<CollectionBackend> QobuzService::songs_collection_backend() {
+  return songs_collection_backend_;
+}
+
+CollectionModel *QobuzService::artists_collection_model() {
+  return artists_collection_model_;
+}
+
+CollectionModel *QobuzService::albums_collection_model() {
+  return albums_collection_model_;
+}
+
+CollectionModel *QobuzService::songs_collection_model() {
+  return songs_collection_model_;
+}
+
+CollectionFilter *QobuzService::artists_collection_filter_model() {
+  return artists_collection_model_->filter();
+}
+
+CollectionFilter *QobuzService::albums_collection_filter_model() {
+  return albums_collection_model_->filter();
+}
+
+CollectionFilter *QobuzService::songs_collection_filter_model() {
+  return songs_collection_model_->filter();
 }
 
 void QobuzService::Exit() {
@@ -351,7 +387,7 @@ QJsonObject QobuzService::ParseLoginReply(QNetworkReply *reply, const QString &r
 
   if (reply->error() != QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
     if (reply->error() != QNetworkReply::NoError && reply->error() < 200) {
-      LoginError(QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+      LoginError(QStringLiteral("%1 (%2)").arg(Utilities::RedactUrls(reply->errorString()), QString::number(reply->error())));
       return QJsonObject();
     }
     // See if there is Json data containing "status", "code" and "message" - then use that instead.
@@ -364,12 +400,12 @@ QJsonObject QobuzService::ParseLoginReply(QNetworkReply *reply, const QString &r
       if (!json_object.isEmpty() && json_object.contains("status"_L1) && json_object.contains("code"_L1) && json_object.contains("message"_L1)) {
         const int code = json_object["code"_L1].toInt();
         const QString message = json_object["message"_L1].toString();
-        error_message = QStringLiteral("%1 (%2)").arg(message).arg(code);
+        error_message = QStringLiteral("%1 (%2)").arg(message, QString::number(code));
       }
     }
     if (error_message.isEmpty()) {
       if (reply->error() != QNetworkReply::NoError) {
-        error_message = QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error());
+        error_message = QStringLiteral("%1 (%2)").arg(Utilities::RedactUrls(reply->errorString()), QString::number(reply->error()));
       }
       else {
         error_message = QStringLiteral("Received HTTP code %1").arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
@@ -658,8 +694,13 @@ void QobuzService::SendSearch() {
       break;
   }
 
+  // The previous search request is deleted later, so disconnect it, otherwise its results can still arrive and end the new search.
+  if (search_request_) {
+    QObject::disconnect(&*search_request_, nullptr, this, nullptr);
+  }
   search_request_.reset(new QobuzRequest(this, url_handler_, network_, query_type));
   QObject::connect(&*search_request_, &QobuzRequest::Results, this, &QobuzService::SearchResultsReceived);
+  QObject::connect(&*search_request_, &QobuzRequest::SongsAvailable, this, &QobuzService::SearchSongsAvailable);
   QObject::connect(&*search_request_, &QobuzRequest::UpdateStatus, this, &QobuzService::SearchUpdateStatus);
   QObject::connect(&*search_request_, &QobuzRequest::UpdateProgress, this, &QobuzService::SearchUpdateProgress);
   search_request_->Search(search_id_, search_text_);
@@ -669,7 +710,10 @@ void QobuzService::SendSearch() {
 
 void QobuzService::SearchResultsReceived(const int id, const SongMap &songs, const QString &error) {
 
-  search_request_.reset();
+  // Only the current search request is finished, not one started after these results.
+  if (id == search_id_) {
+    search_request_.reset();
+  }
   Q_EMIT SearchResults(id, songs, error);
 
 }

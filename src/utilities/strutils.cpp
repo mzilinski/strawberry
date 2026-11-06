@@ -1,7 +1,7 @@
 /*
  * Strawberry Music Player
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,6 +23,8 @@
 #include <QUrl>
 #include <QStringList>
 #include <QRegularExpression>
+#include <QRegularExpressionMatch>
+#include <QRegularExpressionMatchIterator>
 #include <QMetaObject>
 #include <QMetaEnum>
 
@@ -97,37 +99,44 @@ QStringList Updateify(const QStringList &list) {
 
 QString DecodeHtmlEntities(const QString &text) {
 
-  QString copy(text);
-  copy.replace("&amp;"_L1, "&"_L1)
-      .replace("&#38;"_L1, "&"_L1)
-      .replace("&quot;"_L1, "\""_L1)
-      .replace("&#34;"_L1, "\""_L1)
-      .replace("&apos;"_L1, "'"_L1)
-      .replace("&#39;"_L1, "'"_L1)
-      .replace("&lt;"_L1, "<"_L1)
-      .replace("&#60;"_L1, "<"_L1)
-      .replace("&gt;"_L1, ">"_L1)
-      .replace("&#62;"_L1, ">"_L1)
-      .replace("&#x27;"_L1, "'"_L1);
+  // Decode in one pass over the text, so the result of decoding an entity is not decoded again, e.g. "&amp;lt;" must become "&lt;", and "&#38;amp;" must become "&amp;".
+  static const QRegularExpression regex_entity(u"&(quot|#34|apos|#39|#x27|lt|#60|gt|#62|amp|#38);"_s);
 
-  return copy;
+  QString decoded;
+  decoded.reserve(text.size());
+  qsizetype last_end = 0;
+  for (QRegularExpressionMatchIterator it = regex_entity.globalMatch(text); it.hasNext();) {
+    const QRegularExpressionMatch match = it.next();
+    decoded.append(QStringView(text).mid(last_end, match.capturedStart() - last_end));
+    const QStringView entity = match.capturedView(1);
+    if (entity == "quot"_L1 || entity == "#34"_L1) decoded.append(u'"');
+    else if (entity == "apos"_L1 || entity == "#39"_L1 || entity == "#x27"_L1) decoded.append(u'\'');
+    else if (entity == "lt"_L1 || entity == "#60"_L1) decoded.append(u'<');
+    else if (entity == "gt"_L1 || entity == "#62"_L1) decoded.append(u'>');
+    else decoded.append(u'&');
+    last_end = match.capturedEnd();
+  }
+  decoded.append(QStringView(text).mid(last_end));
+
+  return decoded;
 
 }
 
 QString ReplaceMessage(const QString &message, const Song &song, const QString &newline, const bool html_escaped) {
 
   static const QRegularExpression variable_replacer(u"[%][a-z]+[%]"_s);
-  QString copy(message);
 
-  // Replace the first line
-  qint64 pos = 0;
-  QRegularExpressionMatch match;
-  for (match = variable_replacer.match(message, pos); match.hasMatch(); match = variable_replacer.match(message, pos)) {
-    pos = match.capturedStart();
-    QStringList captured = match.capturedTexts();
-    copy.replace(captured[0], ReplaceVariable(captured[0], song, newline, html_escaped));
-    pos += match.capturedLength();
+  // Build the result in one pass, so variables in the values themselves, for example a title containing "%album%", are not replaced.
+  QString copy;
+  qsizetype pos = 0;
+  QRegularExpressionMatchIterator match_iterator = variable_replacer.globalMatch(message);
+  while (match_iterator.hasNext()) {
+    const QRegularExpressionMatch match = match_iterator.next();
+    copy += message.mid(pos, match.capturedStart() - pos);
+    copy += ReplaceVariable(match.captured(0), song, newline, html_escaped);
+    pos = match.capturedEnd();
   }
+  copy += message.mid(pos);
 
   static const QRegularExpression regexp(u" - (>|$)"_s);
   qint64 index_of = copy.indexOf(regexp);

@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ Ha nincs egyezés, akkor a legnagyobb képet veszi a könyvtárból.</translatio
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Az Ön gyűjteménye üres.</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Zene hozzáadásához kattintson ide</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Hozzáfűzés a jelenlegi lejátszólistához</translation>
@@ -1393,6 +1385,17 @@ Ha nincs egyezés, akkor a legnagyobb képet veszi a könyvtárból.</translatio
     <message>
       <source>Search for this</source>
       <translation>Keresés erre</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Az Ön gyűjteménye üres.</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Zene hozzáadásához kattintson ide</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ Ha nincs egyezés, akkor a legnagyobb képet veszi a könyvtárból.</translatio
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation type="unfinished">Complete lyrics automatically</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Dalszöveg</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation type="unfinished">(different across multiple songs)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Dalszöveg</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Előző</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Következő</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Számok mentése</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Nem írható metaadat ebbe a fájlba: %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation type="unfinished">Could not write metadata to %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Számok betöltése</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>betöltés...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Nem található.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Száminformációk szerkesztése</translation>
@@ -7071,26 +7128,6 @@ másodpercnél hosszabbak, illetve legalább a felükig vagy 4 percig vannak lej
       <translation>Kattintson ide a zenék lekéréséhez</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Hozzáfűzés a jelenlegi lejátszólistához</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Jelenlegi lejátszólista cseréje</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Megnyitás új lejátszólistában</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Szám hozzáadása a lejátszási sorhoz</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Lejátszás következőként</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Eltávolítás a kedvencek közül</translation>
     </message>
@@ -7112,6 +7149,40 @@ másodpercnél hosszabbak, illetve legalább a felükig vagy 4 percig vannak lej
     <message>
       <source>Refresh catalogue</source>
       <translation>Katalógus frissítése</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation type="unfinished">Streaming Tabs View</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Előadók</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Albumok</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Számok</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Keresés</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>%1 beállítása…</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>%1 beállítása…</translation>
     </message>
   </context>
   <context>
@@ -7186,40 +7257,6 @@ másodpercnél hosszabbak, illetve legalább a felükig vagy 4 percig vannak lej
     <message>
       <source>Group by</source>
       <translation>Csoportosítás</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>%1 beállítása…</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation type="unfinished">Streaming Tabs View</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Előadók</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Albumok</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Számok</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Keresés</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>%1 beállítása…</translation>
     </message>
   </context>
   <context>

@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2018-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -171,6 +171,9 @@ class CollectionModel : public SimpleTreeModel<CollectionItem> {
   const QMap<QString, CollectionItem*> &container_nodes(const int i) const { return container_nodes_[i]; }
   QList<CollectionItem*> song_nodes() const { return song_nodes_.values(); }
 
+  // Returns the index of the song with the given ID, or an invalid index if it isn't in the model.
+  QModelIndex IndexOfSong(const int song_id) const;
+
   // QAbstractItemModel
   QVariant data(const QModelIndex &idx, const int role = Qt::DisplayRole) const override;
   Qt::ItemFlags flags(const QModelIndex &idx) const override;
@@ -263,7 +266,8 @@ class CollectionModel : public SimpleTreeModel<CollectionItem> {
   CollectionItem *CreateCompilationArtistNode(CollectionItem *parent);
 
   void LoadSongsFromSqlAsync();
-  SongList LoadSongsFromSql(const CollectionFilterOptions &filter_options = CollectionFilterOptions());
+  // Runs in a thread pool, so it doesn't use the model, which can be deleted while the songs are loaded.
+  static SongList LoadSongsFromSql(const SharedPtr<CollectionBackend> backend, const CollectionFilterOptions &filter_options);
 
   static QString DividerKey(const GroupBy group_by, const Song &song, const QString &sort_text);
   static QString DividerDisplayText(const GroupBy group_by, const QString &key);

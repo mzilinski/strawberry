@@ -1,6 +1,7 @@
 /*
  * Strawberry Music Player
  * Copyright 2022, Eoin O'Neill <eoinoneill1991@gmail.com>
+ * Copyright 2022-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -93,14 +94,15 @@ TagReaderResult GME::SPC::Read(const QFileInfo &fileinfo, Song *song) {
   const QByteArray id6_status = file.read(1);
   const bool has_id6 = id6_status.length() >= 1 && id6_status[0] == static_cast<char>(xID6_STATUS::ON);
 
+  // The strings are decoded to QString and set as QString, a std::string would be decoded as Latin-1 again by the TagLib::String setters, which garbles non-ASCII characters.
   file.seek(SONG_TITLE_OFFSET);
-  song->set_title(QString::fromLatin1(file.read(32)).toStdString());
+  song->set_title(ReadFixedString(file.read(32)));
 
   file.seek(GAME_TITLE_OFFSET);
-  song->set_album(QString::fromLatin1(file.read(32)).toStdString());
+  song->set_album(ReadFixedString(file.read(32)));
 
   file.seek(ARTIST_OFFSET);
-  song->set_artist(QString::fromLatin1(file.read(32)).toStdString());
+  song->set_artist(ReadFixedString(file.read(32)));
 
   file.seek(INTRO_LENGTH_OFFSET);
   QByteArray length_bytes = file.read(INTRO_LENGTH_SIZE);
@@ -184,6 +186,14 @@ TagReaderResult GME::SPC::Read(const QFileInfo &fileinfo, Song *song) {
 
 }
 
+QString GME::SPC::ReadFixedString(const QByteArray &data) {
+
+  // The fields have a fixed size, and are padded with null characters.
+  const qsizetype null_pos = data.indexOf('\0');
+  return QString::fromLatin1(null_pos == -1 ? data : data.left(null_pos));
+
+}
+
 qint16 GME::SPC::GetNextMemAddressAlign32bit(qint16 input) {
   return static_cast<qint16>((input + 0x3) & ~0x3);
   // Plus 0x3 for rounding up (not down), AND NOT to flatten out on a 32 bit level.
@@ -254,9 +264,9 @@ TagReaderResult GME::VGM::Read(const QFileInfo &fileinfo, Song *song) {
   // VGM standard dictates string tag data exist in specific order.
   // Order alternates between English and Japanese version of data.
   // Read GD3 tag standard for more details.
-  song->set_title(strings[0].toStdString());
-  song->set_album(strings[2].toStdString());
-  song->set_artist(strings[6].toStdString());
+  song->set_title(strings[0]);
+  song->set_album(strings[2]);
+  song->set_artist(strings[6]);
   song->set_year(strings[8].left(4).toInt());
   song->set_length_nanosec(static_cast<qint64>(length * kNsecPerMsec));
   song->set_valid(true);
@@ -277,7 +287,8 @@ bool GME::VGM::GetPlaybackLength(const QByteArray &sample_count_bytes, const QBy
 
   quint64 loop_sample_count = GME::UnpackBytes32(loop_count_bytes.constData(), static_cast<size_t>(loop_count_bytes.size()));
 
-  if (loop_sample_count == 0) {
+  // The loop is part of the samples, a longer loop is invalid, and would make the intro length underflow, so ignore the loop then.
+  if (loop_sample_count == 0 || loop_sample_count > sample_count) {
     out_length = sample_count * 1000 / SAMPLE_TIMEBASE;
     return true;
   }
@@ -366,6 +377,24 @@ TagReaderResult TagReaderGME::SaveSongRating(const QString &filename, const floa
 
   Q_UNUSED(filename);
   Q_UNUSED(rating);
+
+  return TagReaderResult::ErrorCode::Unsupported;
+
+}
+
+TagReaderResult TagReaderGME::SaveSongLyrics(const QString &filename, const QString &lyrics) const {
+
+  Q_UNUSED(filename);
+  Q_UNUSED(lyrics);
+
+  return TagReaderResult::ErrorCode::Unsupported;
+
+}
+
+TagReaderResult TagReaderGME::SaveSongSyncedLyrics(const QString &filename, const QString &synced_lyrics) const {
+
+  Q_UNUSED(filename);
+  Q_UNUSED(synced_lyrics);
 
   return TagReaderResult::ErrorCode::Unsupported;
 

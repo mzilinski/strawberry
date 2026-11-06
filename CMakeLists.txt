@@ -1,16 +1,9 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.25)
 
 project(strawberry C CXX)
 
 if(APPLE)
   enable_language(OBJC OBJCXX)
-endif()
-
-if(POLICY CMP0054)
-  cmake_policy(SET CMP0054 NEW)
-endif()
-if(POLICY CMP0074)
-  cmake_policy(SET CMP0074 NEW)
 endif()
 
 include(CheckCXXCompilerFlag)
@@ -110,7 +103,6 @@ endif()
 add_compile_options(${COMPILE_OPTIONS})
 
 add_definitions(
-  -DBOOST_BIND_NO_PLACEHOLDERS
   -DQT_STRICT_ITERATORS
   -DQT_NO_CAST_FROM_BYTEARRAY
   -DQT_USE_QSTRINGBUILDER
@@ -170,10 +162,6 @@ find_package(OpenSSL COMPONENTS Crypto CONFIG)
 if(NOT OpenSSL_FOUND)
   find_package(OpenSSL COMPONENTS Crypto REQUIRED)
 endif()
-find_package(Boost CONFIG)
-if(NOT Boost_FOUND)
-  find_package(Boost REQUIRED)
-endif()
 find_package(ICU COMPONENTS uc i18n REQUIRED)
 if(UNIX AND NOT APPLE)
   if(LINUX)
@@ -199,6 +187,7 @@ pkg_check_modules(GSTREAMER_APP REQUIRED IMPORTED_TARGET gstreamer-app-1.0)
 pkg_check_modules(GSTREAMER_TAG REQUIRED IMPORTED_TARGET gstreamer-tag-1.0)
 pkg_check_modules(GSTREAMER_PBUTILS REQUIRED IMPORTED_TARGET gstreamer-pbutils-1.0)
 pkg_check_modules(SQLITE REQUIRED IMPORTED_TARGET sqlite3>=3.9)
+pkg_check_modules(UCHARDET REQUIRED IMPORTED_TARGET uchardet)
 if(UNIX AND NOT APPLE)
   pkg_check_modules(LIBPULSE IMPORTED_TARGET libpulse)
   pkg_check_modules(LIBSECRET IMPORTED_TARGET libsecret-1)
@@ -225,7 +214,7 @@ find_package(GTest)
 pkg_check_modules(LIBSPARSEHASH IMPORTED_TARGET libsparsehash)
 
 set(QT_VERSION_MAJOR 6)
-if(APPLE OR WIN32)
+if(WIN32)
   set(QT_MIN_VERSION 6.8.0)
 else()
   set(QT_MIN_VERSION 6.4.0)
@@ -260,6 +249,25 @@ if(X11_FOUND)
     }
     "
     HAVE_QX11APPLICATION
+  )
+  unset(CMAKE_REQUIRED_FLAGS)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+endif()
+
+if(UNIX AND NOT APPLE)
+  find_package(LayerShellQt 6.0 CONFIG)
+  pkg_check_modules(WAYLAND_CLIENT IMPORTED_TARGET wayland-client)
+  # Check for QWaylandApplication (Qt 6.5 or newer compiled with Wayland), Qt 6.5 is also needed to use layer shell for only some windows.
+  set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+  set(CMAKE_REQUIRED_LIBRARIES Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui)
+  check_cxx_source_compiles("
+    #include <QGuiApplication>
+    int main() {
+      (void)qApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+      return 0;
+    }
+    "
+    HAVE_QWAYLANDAPPLICATION
   )
   unset(CMAKE_REQUIRED_FLAGS)
   unset(CMAKE_REQUIRED_LIBRARIES)
@@ -337,6 +345,11 @@ if(UNIX AND NOT APPLE)
   )
   optional_component(LIBSECRET ON "Credentials: libsecret backend"
     DEPENDS "libsecret" LIBSECRET_FOUND
+  )
+  optional_component(LAYERSHELLQT ON "OSD Pretty on Wayland: LayerShellQt"
+    DEPENDS "LayerShellQt" LayerShellQt_FOUND
+    DEPENDS "wayland-client" WAYLAND_CLIENT_FOUND
+    DEPENDS "QWaylandApplication" HAVE_QWAYLANDAPPLICATION
   )
 endif()
 
@@ -434,6 +447,42 @@ if(NOT CMAKE_CROSSCOMPILING)
     "
     QT_SQLITE_TEST
   )
+  # Check that the Qt sqlite driver uses the same sqlite library as strawberry, since strawberry uses the sqlite functions on the database connections opened by Qt.
+  # An auto extension registered with the sqlite library linked to strawberry is only run for connections opened with that library, not when Qt has its own sqlite library.
+  if(QT_SQLITE_TEST)
+    set(CMAKE_REQUIRED_LIBRARIES Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Sql PkgConfig::SQLITE)
+    check_cxx_source_runs("
+      #include <sqlite3.h>
+      #include <QCoreApplication>
+      #include <QSqlDatabase>
+      #include <QSqlQuery>
+      static bool extension_loaded = false;
+      static int TestExtension(sqlite3 *db, char **error, const struct sqlite3_api_routines *api) {
+        (void)db;
+        (void)error;
+        (void)api;
+        extension_loaded = true;
+        return SQLITE_OK;
+      }
+      int main(int argc, char *argv[]) {
+        QCoreApplication app(argc, argv);
+        if (sqlite3_auto_extension(reinterpret_cast<void(*)(void)>(TestExtension)) != SQLITE_OK) return 1;
+        QSqlDatabase db = QSqlDatabase::addDatabase(\"QSQLITE\");
+        db.setDatabaseName(\":memory:\");
+        if (!db.open()) return 1;
+        QSqlQuery q(db);
+        if (!q.exec(\"SELECT 1;\")) return 1;
+        return extension_loaded ? 0 : 1;
+      }
+      "
+      QT_SQLITE_SAME_LIBRARY_TEST
+    )
+    if(NOT QT_SQLITE_SAME_LIBRARY_TEST)
+      message(FATAL_ERROR "The Qt sqlite driver is not using the same sqlite library as strawberry (${SQLITE_LINK_LIBRARIES}), Qt is probably built with its own sqlite library instead of the system sqlite library. Strawberry uses sqlite functions on the database connections opened by Qt, which requires the same sqlite library.")
+    endif()
+  endif()
+  unset(CMAKE_REQUIRED_FLAGS)
+  unset(CMAKE_REQUIRED_LIBRARIES)
 endif()
 
 add_executable(strawberry)
@@ -509,6 +558,7 @@ set(SOURCES
   src/utilities/randutils.cpp
   src/utilities/threadutils.cpp
   src/utilities/timeutils.cpp
+  src/utilities/lrcutils.cpp
   src/utilities/transliterate.cpp
   src/utilities/xmlutils.cpp
   src/utilities/filemanagerutils.cpp
@@ -539,6 +589,7 @@ set(SOURCES
   src/tagreader/tagreadersavecoverrequest.cpp
   src/tagreader/tagreadersaveplaycountrequest.cpp
   src/tagreader/tagreadersaveratingrequest.cpp
+  src/tagreader/tagreadersavelyricsrequest.cpp
   src/tagreader/albumcovertagdata.cpp
   src/tagreader/savetagcoverdata.cpp
   src/tagreader/tagreaderreply.cpp
@@ -585,8 +636,8 @@ set(SOURCES
 
   src/engine/enginebase.cpp
   src/engine/enginedevice.cpp
-  src/engine/devicefinders.cpp
-  src/engine/devicefinder.cpp
+  src/engine/audiodevicelisters.cpp
+  src/engine/audiodevicelister.cpp
   src/engine/gststartup.cpp
   src/engine/gstengine.cpp
   src/engine/gstenginepipeline.cpp
@@ -608,11 +659,12 @@ set(SOURCES
   src/context/contextview.cpp
   src/context/contextalbum.cpp
 
-  src/collection/collectionlibrary.cpp
+  src/collection/collectionmanager.cpp
   src/collection/collectionmodel.cpp
   src/collection/collectionbackend.cpp
   src/collection/collectionwatcher.cpp
   src/collection/collectionview.cpp
+  src/collection/collectiontreeview.cpp
   src/collection/collectionitem.cpp
   src/collection/collectionitemdelegate.cpp
   src/collection/collectionviewcontainer.cpp
@@ -756,8 +808,6 @@ set(SOURCES
   src/dialogs/aboutdialog.cpp
   src/dialogs/console.cpp
   src/dialogs/errordialog.cpp
-  src/dialogs/edittagdialog.cpp
-  src/dialogs/trackselectiondialog.cpp
   src/dialogs/addstreamdialog.cpp
   src/dialogs/userpassdialog.cpp
   src/dialogs/deleteconfirmationdialog.cpp
@@ -792,6 +842,13 @@ set(SOURCES
   src/widgets/ratingpainter.cpp
   src/widgets/resizabletextedit.cpp
 
+  src/songeditor/songeditor.cpp
+  src/songeditor/tageditor.cpp
+  src/songeditor/lyricstab.cpp
+  src/songeditor/trackselectiondialog.cpp
+  src/songeditor/lyricssearchdialog.cpp
+  src/songeditor/lyricseditor.cpp
+
   src/osd/osdbase.cpp
   src/osd/osdpretty.cpp
 
@@ -802,8 +859,8 @@ set(SOURCES
   src/streaming/streamingsearchmodel.cpp
   src/streaming/streamingsearchsortmodel.cpp
   src/streaming/streamingsearchitemdelegate.cpp
-  src/streaming/streamingsongsview.cpp
-  src/streaming/streamingtabsview.cpp
+  src/streaming/streaminglibraryview.cpp
+  src/streaming/streamingfavoritesview.cpp
   src/streaming/streamingcollectionview.cpp
   src/streaming/streamingcollectionviewcontainer.cpp
   src/streaming/streamingsearchview.cpp
@@ -915,7 +972,7 @@ set(HEADERS
   src/tagreader/tagreaderloadcoverimagereply.h
 
   src/engine/enginebase.h
-  src/engine/devicefinders.h
+  src/engine/audiodevicelisters.h
   src/engine/gstengine.h
   src/engine/gstenginepipeline.h
 
@@ -934,11 +991,12 @@ set(HEADERS
   src/context/contextview.h
   src/context/contextalbum.h
 
-  src/collection/collectionlibrary.h
+  src/collection/collectionmanager.h
   src/collection/collectionmodel.h
   src/collection/collectionbackend.h
   src/collection/collectionwatcher.h
   src/collection/collectionview.h
+  src/collection/collectiontreeview.h
   src/collection/collectionitemdelegate.h
   src/collection/collectionviewcontainer.h
   src/collection/collectiondirectorymodel.h
@@ -1059,8 +1117,6 @@ set(HEADERS
   src/dialogs/aboutdialog.h
   src/dialogs/errordialog.h
   src/dialogs/console.h
-  src/dialogs/edittagdialog.h
-  src/dialogs/trackselectiondialog.h
   src/dialogs/addstreamdialog.h
   src/dialogs/userpassdialog.h
   src/dialogs/deleteconfirmationdialog.h
@@ -1095,6 +1151,13 @@ set(HEADERS
   src/widgets/forcescrollperpixel.h
   src/widgets/resizabletextedit.h
 
+  src/songeditor/songeditor.h
+  src/songeditor/tageditor.h
+  src/songeditor/lyricstab.h
+  src/songeditor/trackselectiondialog.h
+  src/songeditor/lyricssearchdialog.h
+  src/songeditor/lyricseditor.h
+
   src/osd/osdbase.h
   src/osd/osdpretty.h
 
@@ -1105,8 +1168,8 @@ set(HEADERS
   src/streaming/streamingsearchsortmodel.h
   src/streaming/streamingsearchitemdelegate.h
   src/streaming/streamingsearchview.h
-  src/streaming/streamingsongsview.h
-  src/streaming/streamingtabsview.h
+  src/streaming/streaminglibraryview.h
+  src/streaming/streamingfavoritesview.h
   src/streaming/streamingcollectionview.h
   src/streaming/streamingcollectionviewcontainer.h
 
@@ -1216,8 +1279,6 @@ set(UI
   src/dialogs/aboutdialog.ui
   src/dialogs/errordialog.ui
   src/dialogs/console.ui
-  src/dialogs/edittagdialog.ui
-  src/dialogs/trackselectiondialog.ui
   src/dialogs/addstreamdialog.ui
   src/dialogs/userpassdialog.ui
   src/dialogs/messagedialog.ui
@@ -1226,9 +1287,15 @@ set(UI
   src/widgets/trackslider.ui
   src/widgets/loginstatewidget.ui
 
+  src/songeditor/tageditor.ui
+  src/songeditor/lyricstab.ui
+  src/songeditor/lyricseditor.ui
+  src/songeditor/trackselectiondialog.ui
+  src/songeditor/lyricssearchdialog.ui
+
   src/osd/osdpretty.ui
 
-  src/streaming/streamingtabsview.ui
+  src/streaming/streamingfavoritesview.ui
   src/streaming/streamingcollectionviewcontainer.ui
   src/streaming/streamingsearchview.ui
 
@@ -1280,7 +1347,7 @@ if(APPLE)
     src/systemtrayicon/macsystemtrayicon.mm
     src/osd/osdmac.mm
     src/widgets/searchfield_mac.mm
-    src/engine/macosdevicefinder.cpp
+    src/engine/macosaudiodevicelister.cpp
     src/device/macosdevicelister.mm
   )
   list(APPEND HEADERS
@@ -1301,8 +1368,9 @@ if(WIN32)
   list(APPEND SOURCES
     src/utilities/scopedwchararray.cpp
     src/utilities/winutils.cpp
-    src/engine/directsounddevicefinder.cpp
-    src/engine/mmdevicefinder.cpp
+    src/engine/directsoundaudiodevicelister.cpp
+    src/engine/mmaudiodevicelister.cpp
+    src/engine/asioaudiodevicelister.cpp
     src/core/windows7thumbbar.cpp
   )
   list(APPEND HEADERS
@@ -1373,13 +1441,13 @@ if(APPLE)
 endif()
 
 if(HAVE_ALSA)
-  list(APPEND SOURCES src/engine/alsadevicefinder.cpp src/engine/alsapcmdevicefinder.cpp)
+  list(APPEND SOURCES src/engine/alsaaudiodevicelister.cpp src/engine/alsapcmaudiodevicelister.cpp)
 endif()
 if(HAVE_PULSE)
-  list(APPEND SOURCES src/engine/pulsedevicefinder.cpp)
+  list(APPEND SOURCES src/engine/pulseaudiodevicelister.cpp)
 endif()
 if(MSVC)
-  list(APPEND SOURCES src/engine/uwpdevicefinder.cpp src/engine/asiodevicefinder.cpp)
+  list(APPEND SOURCES src/engine/uwpaudiodevicelister.cpp)
   list(APPEND SOURCES src/core/winsystemmediatransportcontrols.cpp)
   list(APPEND HEADERS src/core/winsystemmediatransportcontrols.h)
 endif()
@@ -1697,6 +1765,7 @@ add_subdirectory(src)
 add_subdirectory(dist)
 
 if(TARGET GTest::gtest AND TARGET GTest::gmock AND Qt${QT_VERSION_MAJOR}Test_FOUND)
+  enable_testing()
   add_subdirectory(tests)
 endif()
 
@@ -1714,9 +1783,11 @@ if(HAVE_TRANSLATIONS)
   endif()
 endif()
 
+# The API credentials directory is before the source directory, so a header generated from the credentials set in CMake is used instead of an existing src/apicredentials.h.
 target_include_directories(strawberry_lib PUBLIC
   ${CMAKE_SOURCE_DIR}
   ${CMAKE_BINARY_DIR}
+  ${API_CREDENTIALS_INCLUDE_DIR}
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_BINARY_DIR}/src
 )
@@ -1749,6 +1820,7 @@ target_link_libraries(strawberry_lib PUBLIC
   $<$<BOOL:${HAVE_QPA_QPLATFORMNATIVEINTERFACE}>:Qt${QT_VERSION_MAJOR}::GuiPrivate>
   ICU::uc
   ICU::i18n
+  PkgConfig::UCHARDET
   $<$<BOOL:${HAVE_STREAMTAGREADER}>:PkgConfig::LIBSPARSEHASH>
   $<$<BOOL:${HAVE_ALSA}>:ALSA::ALSA>
   $<$<BOOL:${HAVE_PULSE}>:PkgConfig::LIBPULSE>
@@ -1757,6 +1829,7 @@ target_link_libraries(strawberry_lib PUBLIC
   $<$<BOOL:${HAVE_GSTFASTSPECTRUM}>:PkgConfig::FFTW3>
   $<$<BOOL:${HAVE_EBUR128}>:PkgConfig::LIBEBUR128>
   $<$<BOOL:${HAVE_X11_GLOBALSHORTCUTS}>:X11::X11_xcb>
+  $<$<BOOL:${HAVE_LAYERSHELLQT}>:LayerShellQt::Interface PkgConfig::WAYLAND_CLIENT>
   $<$<BOOL:${HAVE_GIO}>:PkgConfig::GIO>
   $<$<BOOL:${HAVE_GIO_UNIX}>:PkgConfig::GIO_UNIX>
   $<$<BOOL:${HAVE_AUDIOCD}>:PkgConfig::LIBCDIO>

@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -215,10 +215,13 @@ QList<QUrl> GioLister::MakeDeviceUrls(const QString &id) {
 
   {
     QMutexLocker l(&mutex_);
-    volume_root_uri = devices_[id].volume_root_uri;
-    mount_point = devices_[id].mount_path;
-    mount_uri = devices_[id].mount_uri;
-    unix_device = devices_[id].volume_unix_device;
+    // The device can be removed already, operator[] would add an empty device for it.
+    if (!devices_.contains(id)) return QList<QUrl>();
+    const DeviceInfo info = devices_.value(id);
+    volume_root_uri = info.volume_root_uri;
+    mount_point = info.mount_path;
+    mount_uri = info.mount_uri;
+    unix_device = info.volume_unix_device;
   }
 
   QStringList uris;
@@ -492,11 +495,13 @@ void GioLister::DeviceInfo::ReadMountInfo(GMount *mount) {
   }
 
 #ifdef HAVE_GIO_UNIX
+  gchar *root_path = g_file_get_path(root);
 #  ifdef GLIB_VERSION_2_84
-  GUnixMountEntry *unix_mount = g_unix_mount_entry_for(g_file_get_path(root), nullptr);
+  GUnixMountEntry *unix_mount = root_path ? g_unix_mount_entry_for(root_path, nullptr) : nullptr;
 #  else
-  GUnixMountEntry *unix_mount = g_unix_mount_for(g_file_get_path(root), nullptr);
+  GUnixMountEntry *unix_mount = root_path ? g_unix_mount_for(root_path, nullptr) : nullptr;
 #  endif
+  g_free(root_path);
   if (unix_mount) {
     // The GIO's definition of system internal mounts include filesystems like autofs, tmpfs, sysfs, etc,
     // and various system directories, including the root, /boot, /var, /home, etc.
@@ -554,7 +559,7 @@ void GioLister::DeviceInfo::ReadVolumeInfo(GVolume *volume) {
 
   GFile *root = g_volume_get_activation_root(volume);
   if (root) {
-    volume_root_uri = QString::fromUtf8(g_file_get_uri(root));
+    volume_root_uri = ConvertAndFree(g_file_get_uri(root));
     g_object_unref(root);
   }
 

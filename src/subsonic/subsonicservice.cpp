@@ -47,6 +47,7 @@
 #include "core/song.h"
 #include "core/settings.h"
 #include "core/urlhandlers.h"
+#include "utilities/strutils.h"
 #include "credentialsmanager/credentialsmanager.h"
 #include "utilities/randutils.h"
 #include "collection/collectionbackend.h"
@@ -111,6 +112,30 @@ SubsonicService::~SubsonicService() {
     reply->deleteLater();
   }
 
+}
+
+SharedPtr<CollectionBackend> SubsonicService::collection_backend() const {
+  return collection_backend_;
+}
+
+CollectionModel *SubsonicService::collection_model() const {
+  return collection_model_;
+}
+
+CollectionFilter *SubsonicService::collection_filter_model() const {
+  return collection_model_->filter();
+}
+
+SharedPtr<CollectionBackend> SubsonicService::songs_collection_backend() {
+  return collection_backend_;
+}
+
+CollectionModel *SubsonicService::songs_collection_model() {
+  return collection_model_;
+}
+
+CollectionFilter *SubsonicService::songs_collection_filter_model() {
+  return collection_model_->filter();
 }
 
 void SubsonicService::Exit() {
@@ -325,7 +350,7 @@ void SubsonicService::HandlePingReply(QNetworkReply *reply, const QUrl &url, con
   if (reply->error() != QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
     if (reply->error() != QNetworkReply::NoError && reply->error() < 200) {
       // This is a network error, there is nothing more to do.
-      PingError(QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error()));
+      PingError(QStringLiteral("%1 (%2)").arg(Utilities::RedactUrls(reply->errorString()), QString::number(reply->error())));
       return;
     }
     else {
@@ -363,14 +388,14 @@ void SubsonicService::HandlePingReply(QNetworkReply *reply, const QUrl &url, con
             if (!json_obj.isEmpty() && json_obj.contains("code"_L1) && json_obj.contains("message"_L1)) {
               int code = json_obj["code"_L1].toInt();
               QString message = json_obj["message"_L1].toString();
-              errors_ << QStringLiteral("%1 (%2)").arg(message).arg(code);
+              errors_ << QStringLiteral("%1 (%2)").arg(message, QString::number(code));
             }
           }
         }
       }
       if (errors_.isEmpty()) {
         if (reply->error() != QNetworkReply::NoError) {
-          errors_ << QStringLiteral("%1 (%2)").arg(reply->errorString()).arg(reply->error());
+          errors_ << QStringLiteral("%1 (%2)").arg(Utilities::RedactUrls(reply->errorString()), QString::number(reply->error()));
         }
         else {
           errors_ << QStringLiteral("Received HTTP code %1").arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());

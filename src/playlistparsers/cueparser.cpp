@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2019-2024, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2019-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,10 +27,11 @@
 #include <QDateTime>
 #include <QList>
 #include <QString>
+#include <QMap>
+#include <QHash>
 #include <QStringList>
 #include <QRegularExpression>
 #include <QTextStream>
-#include <QStringConverter>
 
 #include "includes/shared_ptr.h"
 #include "constants/timeconstants.h"
@@ -66,27 +67,11 @@ constexpr char kDisc[] = "discnumber";
 CueParser::CueParser(const SharedPtr<TagReaderClient> tagreader_client, const SharedPtr<CollectionBackendInterface> collection_backend, QObject *parent)
     : ParserBase(tagreader_client, collection_backend, parent) {}
 
-ParserBase::LoadResult CueParser::Load(QIODevice *device, const QString &playlist_path, const QDir &dir, const bool collection_lookup) const {
+QList<CueParser::CueEntry> CueParser::ParseEntries(QIODevice *device, const QDir &dir) {
 
-  SongList ret;
-
-  QTextStream text_stream(device);
-
-  const QByteArray data_chunk = device->peek(1024);
-
-  std::optional<QStringConverter::Encoding> encoding = QStringConverter::encodingForData(data_chunk);
-  if (encoding.has_value()) {
-    text_stream.setEncoding(encoding.value());
-  }
-  else {
-    const QByteArray encoding_name = Utilities::TextEncodingFromData(data_chunk);
-    if (!encoding_name.isEmpty()) {
-      encoding = QStringConverter::encodingForName(encoding_name.constData());
-      if (encoding.has_value()) {
-        text_stream.setEncoding(encoding.value());
-      }
-    }
-  }
+  // Cue files are often not in UTF-8, for example windows-1251 for Cyrillic text.
+  QString text = Utilities::TextFromData(device->readAll());
+  QTextStream text_stream(&text, QIODevice::ReadOnly);
 
   QString dir_path = dir.absolutePath();
   // Read the first line already
@@ -137,8 +122,9 @@ ParserBase::LoadResult CueParser::Load(QIODevice *device, const QString &playlis
         album_composer = line_value;
       }
       else if (line_name.compare(QLatin1String(kRem), Qt::CaseInsensitive) == 0) {
+        // A comment without a value, skip it, but stay in the header.
         if (splitted.size() < 3) {
-          break;
+          continue;
         }
         if (line_value.compare(QLatin1String(kGenre), Qt::CaseInsensitive) == 0) {
           album_genre = splitted[2];
@@ -159,7 +145,7 @@ ParserBase::LoadResult CueParser::Load(QIODevice *device, const QString &playlis
 
     if (line.isNull()) {
       qLog(Warning) << "The .cue file from" << dir_path << "defines no tracks!";
-      return ret;
+      return QList<CueEntry>();
     }
 
     // If this is a data file, all of its tracks will be ignored
@@ -251,13 +237,57 @@ ParserBase::LoadResult CueParser::Load(QIODevice *device, const QString &playlis
     }
   }
 
+  return entries;
+
+}
+
+bool CueParser::EntryHasValidIndices(const QList<CueEntry> &entries, const qsizetype i) {
+
+  // Like in Load(), the last track of a media file only needs a valid beginning, the other tracks also need the beginning of the next track as their end.
+  if (IndexToMarker(entries.at(i).index) == -1) return false;
+  if (i + 1 < entries.size() && entries.at(i).file == entries.at(i + 1).file) {
+    return IndexToMarker(entries.at(i + 1).index) != -1;
+  }
+
+  return true;
+
+}
+
+ParserBase::LoadResult CueParser::Load(QIODevice *device, const QString &playlist_path, const QDir &dir, const bool collection_lookup) const {
+
+  SongList ret;
+
+  const QList<CueEntry> entries = ParseEntries(device, dir);
+  if (entries.isEmpty()) {
+    return ret;
+  }
+
   QDateTime cue_mtime = QFileInfo(playlist_path).lastModified();
+
+  // Without the collection lookup, the song only has the metadata read from the media file, which is the same for all its tracks, so only read it once.
+  QHash<QString, Song> media_file_songs;
 
   // Finalize parsing songs
   for (int i = 0; i < entries.length(); i++) {
     CueEntry entry = entries.at(i);
 
-    Song song = LoadSong(entry.file, IndexToMarker(entry.index), 0, dir, collection_lookup);
+    Song song;
+    if (collection_lookup) {
+      song = LoadSong(entry.file, IndexToMarker(entry.index), 0, dir, collection_lookup);
+    }
+    else {
+      QHash<QString, Song>::const_iterator it = media_file_songs.constFind(entry.file);
+      if (it == media_file_songs.constEnd()) {
+        it = media_file_songs.insert(entry.file, LoadSong(entry.file, IndexToMarker(entry.index), 0, dir, collection_lookup));
+      }
+      song = it.value();
+    }
+
+    // The media file doesn't exist, or the track has no FILE, skip it, since the CUE metadata below would make it a valid song without a URL.
+    if (song.url().isEmpty()) {
+      qLog(Warning) << "Skipping track" << entry.title << "in" << playlist_path << "without a media file";
+      continue;
+    }
 
     // Cue song has mtime equal to qMax(media_file_mtime, cue_sheet_mtime)
     if (cue_mtime.isValid()) {
@@ -287,6 +317,37 @@ ParserBase::LoadResult CueParser::Load(QIODevice *device, const QString &playlis
   }
 
   return ret;
+}
+
+QStringList CueParser::MediaFiles(QIODevice *device, const QDir &dir) const {
+
+  // Only media files with a track which Load() can return a song for, using the same parsing and index validation, so a CUE sheet without valid tracks for a media file doesn't claim it.
+  QStringList media_files;
+  const QList<CueEntry> entries = ParseEntries(device, dir);
+  for (qsizetype i = 0; i < entries.size(); ++i) {
+    // A track before any FILE line has no media file.
+    if (entries.at(i).file.isEmpty() || !EntryHasValidIndices(entries, i)) continue;
+    const QString media_file = QDir::cleanPath(entries.at(i).file);
+    if (!media_files.contains(media_file)) {
+      media_files << media_file;
+    }
+  }
+
+  return media_files;
+
+}
+
+QMap<QString, SongList> CueParser::LoadByFile(QIODevice *device, const QString &playlist_path, const QDir &dir, const bool collection_lookup) const {
+
+  QMap<QString, SongList> songs_by_file;
+
+  const SongList songs = Load(device, playlist_path, dir, collection_lookup).songs;
+  for (const Song &song : songs) {
+    songs_by_file[song.url().toLocalFile()] << song;
+  }
+
+  return songs_by_file;
+
 }
 
 // This and the kFileLineRegExp do most of the "dirty" work, namely: splitting the raw .cue

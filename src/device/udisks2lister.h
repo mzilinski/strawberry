@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2016, Valeriy Malov <jazzvoid@gmail.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -117,7 +117,7 @@ class Udisks2Lister : public DeviceLister {
 
   static PartitionData ReadPartitionData(const QDBusObjectPath &path);
   void HandleFinishedMountJob(const Udisks2Lister::PartitionData &partition_data);
-  void HandleFinishedUnmountJob(const Udisks2Lister::PartitionData &partition_data, const QDBusObjectPath &mounted_object);
+  void HandleFinishedUnmountJob(const QDBusObjectPath &partition_path);
 
   QReadWriteLock device_data_lock_;
   QMap<QString, PartitionData> device_data_;

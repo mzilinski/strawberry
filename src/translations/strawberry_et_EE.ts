@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation>Esitaja, albumi, albumi esitaja, pealkirja, helilooja ja esineja järjestuse siltide tugi</translation>
@@ -1361,15 +1361,7 @@ Kui vasteid pole, kasutab ta kaustas asuvat suurimat pilti.</translation>
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Su muusikakogu on tühi!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Muusika lisamiseks klõpsa siin</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Lisa praegusesse esitusloendisse</translation>
@@ -1393,6 +1385,17 @@ Kui vasteid pole, kasutab ta kaustas asuvat suurimat pilti.</translation>
     <message>
       <source>Search for this</source>
       <translation>Otsi seda</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Su muusikakogu on tühi!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Muusika lisamiseks klõpsa siin</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ Kui vasteid pole, kasutab ta kaustas asuvat suurimat pilti.</translation>
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Täida laulusõnad automaatselt</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Laulusõnad</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(erinev eri lugude puhul)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Laulusõnad</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Eelmine</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Järgmine</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Lugude salvestamine</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Metaandmete salvestamine faili „%1“ ei õnnestunud</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Metaandmete salvestamine faili „%1“ ei õnnestunud: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Radade laadimine</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>laadimine...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Ei leitud.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Muuda loo teavet</translation>
@@ -7070,26 +7127,6 @@ Kas soovid jätkata?</translation>
       <translation>Muusika hankimiseks klõpsa siia</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Lisa praegusesse esitusloendisse</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Asenda praegune esitusloend</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Ava uues esitusloendis</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Lisa järjekorda</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Lisa järgmisena esitamiseks järjekorda</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Eemalda lemmikutest</translation>
     </message>
@@ -7111,6 +7148,40 @@ Kas soovid jätkata?</translation>
     <message>
       <source>Refresh catalogue</source>
       <translation>Värskenda kataloog</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Voogedastuse kaardivaade</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Esitajad</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Albumid</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Lood</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Otsing</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Seadista %1...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Seadista %1...</translation>
     </message>
   </context>
   <context>
@@ -7185,40 +7256,6 @@ Kas soovid jätkata?</translation>
     <message>
       <source>Group by</source>
       <translation>Rühmitamise alus</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Seadista %1...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Voogedastuse kaardivaade</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Esitajad</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Albumid</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Lood</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Otsing</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Seadista %1...</translation>
     </message>
   </context>
   <context>

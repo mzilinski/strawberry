@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2021, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -180,22 +180,26 @@ GstElement *Transcoder::CreateElementForMimeType(GstElementFactoryListType eleme
 
 }
 
-Transcoder::JobFinishedEvent::JobFinishedEvent(JobState *state, bool success)
-    : QEvent(static_cast<QEvent::Type>(sEventType)), state_(state), success_(success) {}
+Transcoder::JobFinishedEvent::JobFinishedEvent(const quint64 job_id, const bool success)
+    : QEvent(static_cast<QEvent::Type>(sEventType)), job_id_(job_id), success_(success) {}
 
 void Transcoder::JobState::PostFinished(const bool success) {
+
+  // Only post the first result, a pipeline can post more than one error message, or an error message and end of stream.
+  if (finished_posted_.exchange(true)) return;
 
   if (success) {
     Q_EMIT parent_->LogLine(tr("Successfully written %1").arg(QDir::toNativeSeparators(job_.output)));
   }
 
-  QCoreApplication::postEvent(parent_, new Transcoder::JobFinishedEvent(this, success));
+  QCoreApplication::postEvent(parent_, new Transcoder::JobFinishedEvent(id_, success));
 
 }
 
 Transcoder::Transcoder(QObject *parent, const QString &settings_postfix)
     : QObject(parent),
       max_threads_(QThread::idealThreadCount()),
+      next_job_id_(0),
       settings_postfix_(settings_postfix) {
 
   if (JobFinishedEvent::sEventType == -1)
@@ -302,7 +306,7 @@ QString Transcoder::GetFile(const QString &input, const TranscoderPreset &preset
     QString filename = fileinfo_output.completeBaseName();
     QString suffix = fileinfo_output.suffix();
     for (int i = 0; i < 1000000; ++i) {
-      QString new_filename = QStringLiteral("%1/%2-%3.%4").arg(path, filename).arg(i).arg(suffix);
+      QString new_filename = QStringLiteral("%1/%2-%3.%4").arg(path, filename, QString::number(i), suffix);
       fileinfo_output.setFile(new_filename);
       if (!fileinfo_output.exists()) {
         break;
@@ -417,7 +421,7 @@ void Transcoder::JobState::ReportError(GstMessage *msg) const {
 
 bool Transcoder::StartJob(const Job &job) {
 
-  SharedPtr<JobState> state = make_shared<JobState>(job, this);
+  SharedPtr<JobState> state = make_shared<JobState>(++next_job_id_, job, this);
 
   Q_EMIT LogLine(tr("Starting %1").arg(QDir::toNativeSeparators(job.input)));
 
@@ -505,7 +509,7 @@ bool Transcoder::event(QEvent *e) {
     // Find this job in the list
     JobStateList::const_iterator it = current_jobs_.cbegin();
     for (; it != current_jobs_.cend(); ++it) {
-      if (it->get() == finished_event->state_) break;
+      if ((*it)->id_ == finished_event->job_id_) break;
     }
     if (it == current_jobs_.cend()) {
       // Couldn't find it, maybe GStreamer gave us an event after we'd destroyed the pipeline?
@@ -517,7 +521,7 @@ bool Transcoder::event(QEvent *e) {
 
     // Remove event handlers from the gstreamer pipeline, so they don't get called after the pipeline is shutting down
     {
-      GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(finished_event->state_->pipeline_));
+      GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE((*it)->pipeline_));
       if (bus) {
         gst_bus_set_sync_handler(bus, nullptr, nullptr, nullptr);
         gst_object_unref(bus);
@@ -645,17 +649,28 @@ void Transcoder::SetElementProperties(const QString &name, GObject *object) {
         g_object_set(object, property->name, g_value, nullptr);
         break;
       }
-      case G_TYPE_LONG:
-      case G_TYPE_INT64:{
+      // g_object_set() reads the value as the type of the property, and long is only 32 bits on Windows, so 64-bit properties need 64-bit values.
+      case G_TYPE_LONG:{
         const glong g_value = static_cast<glong>(value.toLongLong());
         qLog(Debug) << "Setting" << property->name << "(long)" << "to" << g_value;
         g_object_set(object, property->name, g_value, nullptr);
         break;
       }
-      case G_TYPE_ULONG:
-      case G_TYPE_UINT64:{
+      case G_TYPE_INT64:{
+        const gint64 g_value = static_cast<gint64>(value.toLongLong());
+        qLog(Debug) << "Setting" << property->name << "(int64)" << "to" << g_value;
+        g_object_set(object, property->name, g_value, nullptr);
+        break;
+      }
+      case G_TYPE_ULONG:{
         const gulong g_value = static_cast<gulong>(value.toULongLong());
         qLog(Debug) << "Setting" << property->name << "(ulong)" << "to" << g_value;
+        g_object_set(object, property->name, g_value, nullptr);
+        break;
+      }
+      case G_TYPE_UINT64:{
+        const guint64 g_value = static_cast<guint64>(value.toULongLong());
+        qLog(Debug) << "Setting" << property->name << "(uint64)" << "to" << g_value;
         g_object_set(object, property->name, g_value, nullptr);
         break;
       }

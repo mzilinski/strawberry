@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -43,6 +43,7 @@
 #include <QMessageBox>
 
 #include "includes/shared_ptr.h"
+#include "core/logging.h"
 #include "core/settings.h"
 #include "constants/filenameconstants.h"
 #include "utilities/timeutils.h"
@@ -105,6 +106,7 @@ void PlaylistManager::Init(PlaylistSequence *sequence, PlaylistContainer *playli
   QObject::connect(&*collection_backend_, &CollectionBackend::SongsChanged, this, &PlaylistManager::UpdateCollectionSongs);
   QObject::connect(&*collection_backend_, &CollectionBackend::SongsStatisticsChanged, this, &PlaylistManager::UpdateCollectionSongs);
   QObject::connect(&*collection_backend_, &CollectionBackend::SongsRatingChanged, this, &PlaylistManager::UpdateCollectionSongs);
+  QObject::connect(&*collection_backend_, &CollectionBackend::SongsLyricsChanged, this, &PlaylistManager::UpdateCollectionSongs);
 
   QObject::connect(parser_, &PlaylistParser::Error, this, &PlaylistManager::Error);
 
@@ -130,6 +132,39 @@ void PlaylistManager::PlaylistLoaded() {
   --playlists_loading_;
   if (playlists_loading_ == 0) {
     Q_EMIT AllPlaylistsLoaded();
+  }
+
+}
+
+void PlaylistManager::SavePendingPlaylistsAsync() {
+
+  for (const Data &data : std::as_const(playlists_)) {
+    Playlist *playlist = data.p;
+    if (playlist->is_restoring()) {
+      playlists_restoring_ << playlist;
+      QObject::connect(playlist, &Playlist::RestoreDone, this, [this, playlist]() {
+        playlist->SavePending();
+        PendingPlaylistSaved(playlist);
+      }, Qt::SingleShotConnection);
+      QObject::connect(playlist, &QObject::destroyed, this, [this, playlist]() { PendingPlaylistSaved(playlist); }, Qt::SingleShotConnection);
+    }
+    else {
+      playlist->SavePending();
+    }
+  }
+
+  if (playlists_restoring_.isEmpty()) {
+    Q_EMIT PendingPlaylistsSaved();
+  }
+
+}
+
+void PlaylistManager::PendingPlaylistSaved(Playlist *playlist) {
+
+  if (!playlists_restoring_.remove(playlist)) return;
+
+  if (playlists_restoring_.isEmpty()) {
+    Q_EMIT PendingPlaylistsSaved();
   }
 
 }
@@ -204,7 +239,7 @@ void PlaylistManager::New(const QString &name, const SongList &songs, const QStr
 
   // If the name is just "Playlist", append the id
   if (name == tr("Playlist")) {
-    Rename(id, QStringLiteral("%1 %2").arg(name).arg(id));
+    Rename(id, QStringLiteral("%1 %2").arg(name, QString::number(id)));
   }
 
 }
@@ -259,16 +294,40 @@ void PlaylistManager::SaveWithUI(const int id, const QString &playlist_name) {
   QString last_save_extension = s.value(PlaylistSettings::kLastSaveExtension, parser()->default_extension()).toString();
   s.endGroup();
 
+  // The saved filter can be from before each extension had its own filter, then use the filter for the last extension.
+  const QString filters = parser()->filters(PlaylistParser::Type::Save);
+  if (!filters.split(u";;"_s).contains(last_save_filter)) {
+    last_save_filter = parser()->save_filter(last_save_extension);
+    if (last_save_filter.isEmpty()) last_save_filter = parser()->default_filter();
+  }
+
   QString suggested_filename = playlist_name;
   QString filename = last_save_path + QLatin1Char('/') + suggested_filename.remove(u'/').remove(QRegularExpression(QLatin1String(kProblematicCharactersRegex), QRegularExpression::CaseInsensitiveOption)) + QLatin1Char('.') + last_save_extension;
 
   QFileInfo fileinfo;
   Q_FOREVER {
-    filename = QFileDialog::getSaveFileName(nullptr, tr("Save playlist", "Title of the playlist save dialog."), filename, parser()->filters(PlaylistParser::Type::Save), &last_save_filter);
+    filename = GetSaveFileName(filename, filters, &last_save_filter);
     if (filename.isEmpty()) return;
     fileinfo.setFile(filename);
+
+    // A playlist extension that was entered is kept, without one, add the extension of the selected filter.
+    const QString filter_extension = parser()->save_extension(last_save_filter);
+    if (!filter_extension.isEmpty() && !parser_->ParserForExtension(PlaylistParser::Type::Save, fileinfo.suffix())) {
+      filename += QLatin1Char('.') + filter_extension;
+      fileinfo.setFile(filename);
+      // The file dialog only asked about replacing the file it returned.
+      if (fileinfo.exists() && QMessageBox::question(nullptr, tr("Save playlist", "Title of the playlist save dialog."), tr("%1 already exists. Do you want to replace it?").arg(fileinfo.fileName()), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+        continue;
+      }
+    }
+
     ParserBase *parser = parser_->ParserForExtension(PlaylistParser::Type::Save, fileinfo.suffix());
-    if (parser) break;
+    if (parser) {
+      // Remember the filter of the extension that is saved, it differs from the selected filter when another playlist extension was entered.
+      const QString saved_filter = parser_->save_filter(fileinfo.suffix());
+      if (!saved_filter.isEmpty()) last_save_filter = saved_filter;
+      break;
+    }
     QMessageBox::warning(nullptr, tr("Unknown playlist extension"), tr("Unknown file extension for playlist."));
   }
 
@@ -292,9 +351,49 @@ void PlaylistManager::SaveWithUI(const int id, const QString &playlist_name) {
 
 }
 
+QString PlaylistManager::GetSaveFileName(const QString &filename, const QString &filters, QString *selected_filter) const {
+
+  QFileDialog dialog(nullptr, tr("Save playlist", "Title of the playlist save dialog."));
+#ifdef Q_OS_MACOS
+  // The native macOS save dialog ignores the filters, so the playlist format couldn't be selected.
+  // The option has to be set before the other properties.
+  dialog.setOption(QFileDialog::DontUseNativeDialog);
+#endif
+  dialog.setAcceptMode(QFileDialog::AcceptSave);
+  dialog.setFileMode(QFileDialog::AnyFile);
+  dialog.setNameFilters(filters.split(u";;"_s));
+  dialog.selectNameFilter(*selected_filter);
+  const QFileInfo fileinfo(filename);
+  dialog.setDirectory(fileinfo.path());
+  dialog.selectFile(fileinfo.fileName());
+
+  // The extension decides the format, so change it to the extension of the filter when another filter is selected.
+  // Once the dialog is closed, it can't be told whether an extension was entered or kept, so this has to be done while the dialog is shown.
+  QObject::connect(&dialog, &QFileDialog::filterSelected, &dialog, [this, &dialog](const QString &filter) {
+    const QString extension = parser_->save_extension(filter);
+    const QString current_filename = dialog.selectedFiles().value(0);
+    if (extension.isEmpty() || current_filename.isEmpty()) return;
+    const QFileInfo current_fileinfo(current_filename);
+    if (current_fileinfo.suffix().compare(extension, Qt::CaseInsensitive) == 0) return;
+    const QString basename = parser_->ParserForExtension(PlaylistParser::Type::Save, current_fileinfo.suffix()) ? current_fileinfo.completeBaseName() : current_fileinfo.fileName();
+    dialog.selectFile(basename + QLatin1Char('.') + extension);
+  });
+
+  if (dialog.exec() != QDialog::Accepted) return QString();
+
+  *selected_filter = dialog.selectedNameFilter();
+
+  return dialog.selectedFiles().value(0);
+
+}
+
 void PlaylistManager::Rename(const int id, const QString &new_name) {
 
-  Q_ASSERT(playlists_.contains(id));
+  // Using operator[] below would add an entry without a playlist for an id that is not open.
+  if (!playlists_.contains(id)) {
+    qLog(Error) << "Can't rename playlist" << id << "since it is not open";
+    return;
+  }
 
   playlist_backend_->RenamePlaylist(id, new_name);
   playlists_[id].name = new_name;
@@ -612,9 +711,59 @@ void PlaylistManager::SaveAllPlaylists() {
     path_type = optionsdialog.path_type();
   }
 
+  static const QRegularExpression regex_invalid_dir_characters(QString::fromLatin1(kInvalidDirCharactersRegex));
+  static const QRegularExpression regex_problematic_characters(QLatin1String(kProblematicCharactersRegex), QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression regex_control_characters(u"[\\x00-\\x1F]"_s);
+  // Windows doesn't allow these device names as filenames, also not with an extension, so "CON.m3u" can't be created.
+  // This includes the superscript digits ¹, ² and ³ (U+00B9, U+00B2, U+00B3) after COM and LPT.
+  static const QRegularExpression regex_windows_reserved_names(u"^(CON|PRN|AUX|NUL|COM[0-9\\x{00B9}\\x{00B2}\\x{00B3}]|LPT[0-9\\x{00B9}\\x{00B2}\\x{00B3}])(\\.|$)"_s, QRegularExpression::CaseInsensitiveOption);
+
+  // Playlists can have the same name, use a unique filename for each, so they don't overwrite each other.
+  // Compared case and normalization insensitive, since the filesystem might be, for example "é" can be one or two characters.
+  const auto filename_key = [](const QString &filename) { return filename.normalized(QString::NormalizationForm_C).toCaseFolded(); };
+  QSet<QString> filename_keys;
+
+  // Most filesystems limit a filename to 255 bytes, or 255 UTF-16 characters, which a UTF-8 length of 255 bytes is also within.
+  // Shorten the name, leaving room for the extension and the number added to make it unique, without splitting a surrogate pair.
+  constexpr qsizetype kMaxFilenameBytes = 255;
+  const qsizetype extension_bytes = 1 + extension.toUtf8().size();
+  const auto shorten_filename = [](const QString &filename, const qsizetype max_bytes) {
+    qsizetype bytes = 0;
+    qsizetype i = 0;
+    while (i < filename.size()) {
+      const char16_t c = filename.at(i).unicode();
+      const bool surrogate_pair = QChar::isHighSurrogate(c) && i + 1 < filename.size() && filename.at(i + 1).isLowSurrogate();
+      const qsizetype char_bytes = surrogate_pair ? 4 : c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+      if (bytes + char_bytes > max_bytes) break;
+      bytes += char_bytes;
+      i += surrogate_pair ? 2 : 1;
+    }
+    return filename.left(i).trimmed();
+  };
   for (QMap<int, Data>::const_iterator it = playlists_.constBegin(); it != playlists_.constEnd(); ++it) {
     const Data &data = *it;
-    const QString filepath = path + QLatin1Char('/') + data.name + QLatin1Char('.') + extension;
+
+    // The playlist name can contain characters that are not valid in a filename, a "/" would point to a directory that doesn't exist.
+    QString filename = data.name;
+    filename.remove(regex_invalid_dir_characters).remove(regex_problematic_characters).remove(regex_control_characters);
+    filename = filename.trimmed();
+    while (filename.startsWith(QLatin1String(kInvalidPrefixCharacters))) {
+      filename = filename.mid(1).trimmed();
+    }
+    if (filename.isEmpty()) {
+      filename = tr("Playlist");
+    }
+    // Done on all platforms, since the playlists can be copied to Windows.
+    filename.replace(regex_windows_reserved_names, u"\\1_\\2"_s);
+
+    QString unique_filename = shorten_filename(filename, kMaxFilenameBytes - extension_bytes);
+    for (int i = 2; filename_keys.contains(filename_key(unique_filename)); ++i) {
+      const QString suffix = QStringLiteral(" (%1)").arg(i);
+      unique_filename = shorten_filename(filename, kMaxFilenameBytes - extension_bytes - suffix.size()) + suffix;
+    }
+    filename_keys << filename_key(unique_filename);
+
+    const QString filepath = path + QLatin1Char('/') + unique_filename + QLatin1Char('.') + extension;
     Save(it.key(), data.name, filepath, path_type);
   }
 

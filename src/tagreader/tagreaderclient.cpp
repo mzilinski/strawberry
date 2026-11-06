@@ -45,6 +45,7 @@
 #include "tagreadersavecoverrequest.h"
 #include "tagreadersaveplaycountrequest.h"
 #include "tagreadersaveratingrequest.h"
+#include "tagreadersavelyricsrequest.h"
 #include "tagreaderreply.h"
 #include "tagreaderreadfilereply.h"
 #include "tagreaderreadstreamreply.h"
@@ -59,9 +60,16 @@ TagReaderClient::TagReaderClient(QObject *parent)
     : QObject(parent),
       original_thread_(thread()),
       abort_(false),
+      exited_(false),
       processing_(false) {
 
   setObjectName(QLatin1String(QObject::metaObject()->className()));
+
+}
+
+void TagReaderClient::AbortReads() {
+
+  abort_ = true;
 
 }
 
@@ -77,6 +85,23 @@ void TagReaderClient::ExitAsync() {
 void TagReaderClient::Exit() {
 
   Q_ASSERT(QThread::currentThread() == thread());
+
+  // Write the requests queued after the requests were last processed, before moving to the original thread.
+  // exited_ is set under the same lock as the queue when it's empty, so the requests enqueued before are written here, and the requests after are written directly by EnqueueRequest(), in order.
+  for (;;) {
+    TagReaderRequestPtr request;
+    {
+      QMutexLocker l(&mutex_requests_);
+      if (requests_.isEmpty()) {
+        exited_ = true;
+        break;
+      }
+      request = requests_.dequeue();
+    }
+    if (IsWriteRequest(request)) {
+      ProcessRequest(request);
+    }
+  }
 
   moveToThread(original_thread_);
   Q_EMIT ExitFinished();
@@ -96,11 +121,28 @@ bool TagReaderClient::HaveRequests() const {
 
 void TagReaderClient::EnqueueRequest(TagReaderRequestPtr request) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
+  // When exiting, the requests reading files are not processed, and their replies are not finished.
+  if (abort_.load() && !IsWriteRequest(request)) return;
+
+  // After exiting, the requests are no longer processed in the tagreader thread, so the requests writing to files are processed directly.
+  // For example when a write finished during exiting and the file is then read again, or written to again.
+  // exited_ is checked under the same lock as Exit() sets it, so a request is either enqueued and written by Exit(), or written directly after the queued requests were written.
+  bool process_directly = false;
   {
     QMutexLocker l(&mutex_requests_);
-    requests_.enqueue(request);
+    if (exited_.load()) {
+      process_directly = true;
+    }
+    else {
+      requests_.enqueue(request);
+    }
+  }
+
+  if (process_directly) {
+    ProcessRequest(request);
+    return;
   }
 
   // Atomically claim the "processing" flag false → true.
@@ -126,7 +168,8 @@ TagReaderRequestPtr TagReaderClient::DequeueRequest() {
 
 void TagReaderClient::ProcessRequestsAsync() {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  // The request could have been enqueued just before exiting, then Exit() wrote it, and the tagreader moved to the thread calling this.
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   QMetaObject::invokeMethod(this, &TagReaderClient::ProcessRequests, Qt::QueuedConnection);
 
@@ -140,11 +183,10 @@ void TagReaderClient::ProcessRequests() {
 
   for (;;) {
     while (HaveRequests()) {
-      if (abort_.load()) {
-        processing_ = false;
-        return;
-      }
-      ProcessRequest(DequeueRequest());
+      TagReaderRequestPtr request = DequeueRequest();
+      // When exiting, only the requests writing to files are processed, the replies of the other requests are not finished.
+      if (abort_.load() && !IsWriteRequest(request)) continue;
+      ProcessRequest(request);
     }
 
     // Drop the flag, then re-check the queue to close the race where a producer enqueues *after* HaveRequests() returned false
@@ -159,9 +201,19 @@ void TagReaderClient::ProcessRequests() {
 
 }
 
+bool TagReaderClient::IsWriteRequest(TagReaderRequestPtr request) {
+
+  return dynamic_pointer_cast<TagReaderWriteFileRequest>(request) ||
+         dynamic_pointer_cast<TagReaderSaveCoverRequest>(request) ||
+         dynamic_pointer_cast<TagReaderSavePlaycountRequest>(request) ||
+         dynamic_pointer_cast<TagReaderSaveRatingRequest>(request) ||
+         dynamic_pointer_cast<TagReaderSaveLyricsRequest>(request);
+
+}
+
 void TagReaderClient::ProcessRequest(TagReaderRequestPtr request) {
 
-  Q_ASSERT(QThread::currentThread() == thread());
+  Q_ASSERT(exited_ || QThread::currentThread() == thread());
 
   TagReaderReplyPtr reply = request->reply;
 
@@ -226,6 +278,14 @@ void TagReaderClient::ProcessRequest(TagReaderRequestPtr request) {
   else if (TagReaderSaveRatingRequestPtr save_rating_request = dynamic_pointer_cast<TagReaderSaveRatingRequest>(request)) {
     result = SaveSongRatingBlocking(save_rating_request->filename, save_rating_request->rating);
   }
+  else if (TagReaderSaveLyricsRequestPtr save_lyrics_request = dynamic_pointer_cast<TagReaderSaveLyricsRequest>(request)) {
+    if (save_lyrics_request->synced) {
+      result = SaveSongSyncedLyricsBlocking(save_lyrics_request->filename, save_lyrics_request->lyrics);
+    }
+    else {
+      result = SaveSongLyricsBlocking(save_lyrics_request->filename, save_lyrics_request->lyrics);
+    }
+  }
   else {
     result = TagReaderResult::ErrorCode::Unsupported;
     qLog(Error) << "Unknown tagreader request type";
@@ -247,7 +307,7 @@ bool TagReaderClient::IsMediaFileBlocking(const QString &filename) const {
 
 TagReaderReplyPtr TagReaderClient::IsMediaFileAsync(const QString &filename) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
 
@@ -274,7 +334,7 @@ TagReaderResult TagReaderClient::ReadFileBlocking(const QString &filename, Song 
 
 TagReaderReadFileReplyPtr TagReaderClient::ReadFileAsync(const QString &filename, const Song &song) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReadFileReplyPtr reply = TagReaderReply::Create<TagReaderReadFileReply>(filename);
 
@@ -298,7 +358,7 @@ TagReaderResult TagReaderClient::ReadStreamBlocking(const QUrl &url, const QStri
 
 TagReaderReadStreamReplyPtr TagReaderClient::ReadStreamAsync(const QUrl &url, const QString &filename, const quint64 size, const quint64 mtime, const QString &token_type, const QString &access_token) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReadStreamReplyPtr reply = TagReaderReply::Create<TagReaderReadStreamReply>(url, filename);
 
@@ -318,13 +378,14 @@ TagReaderReadStreamReplyPtr TagReaderClient::ReadStreamAsync(const QUrl &url, co
 
 TagReaderResult TagReaderClient::WriteFileBlocking(const QString &filename, const Song &song, const SaveTagsOptions save_tags_options, const SaveTagCoverData &save_tag_cover_data, const TagID3v2Version tag_id3v2_version) {
 
+  QMutexLocker l(&mutex_write_);
   return tagreader_.WriteFile(filename, song, save_tags_options, save_tag_cover_data, tag_id3v2_version);
 
 }
 
 TagReaderReplyPtr TagReaderClient::WriteFileAsync(const QString &filename, const Song &song, const SaveTagsOptions save_tags_options, const SaveTagCoverData &save_tag_cover_data, const TagID3v2Version tag_id3v2_version) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
 
@@ -363,7 +424,7 @@ TagReaderResult TagReaderClient::LoadCoverImageBlocking(const QString &filename,
 
 TagReaderLoadCoverDataReplyPtr TagReaderClient::LoadCoverDataAsync(const QString &filename) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderLoadCoverDataReplyPtr reply = TagReaderReply::Create<TagReaderLoadCoverDataReply>(filename);
 
@@ -379,7 +440,7 @@ TagReaderLoadCoverDataReplyPtr TagReaderClient::LoadCoverDataAsync(const QString
 
 TagReaderLoadCoverImageReplyPtr TagReaderClient::LoadCoverImageAsync(const QString &filename) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderLoadCoverImageReplyPtr reply = TagReaderReply::Create<TagReaderLoadCoverImageReply>(filename);
 
@@ -395,13 +456,14 @@ TagReaderLoadCoverImageReplyPtr TagReaderClient::LoadCoverImageAsync(const QStri
 
 TagReaderResult TagReaderClient::SaveCoverBlocking(const QString &filename, const SaveTagCoverData &save_tag_cover_data) {
 
+  QMutexLocker l(&mutex_write_);
   return tagreader_.SaveEmbeddedCover(filename, save_tag_cover_data);
 
 }
 
 TagReaderReplyPtr TagReaderClient::SaveCoverAsync(const QString &filename, const SaveTagCoverData &save_tag_cover_data) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
 
@@ -418,7 +480,7 @@ TagReaderReplyPtr TagReaderClient::SaveCoverAsync(const QString &filename, const
 
 TagReaderReplyPtr TagReaderClient::SaveSongPlaycountAsync(const QString &filename, const uint playcount) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
 
@@ -435,13 +497,14 @@ TagReaderReplyPtr TagReaderClient::SaveSongPlaycountAsync(const QString &filenam
 
 TagReaderResult TagReaderClient::SaveSongPlaycountBlocking(const QString &filename, const uint playcount) {
 
+  QMutexLocker l(&mutex_write_);
   return tagreader_.SaveSongPlaycount(filename, playcount);
 
 }
 
 void TagReaderClient::SaveSongsPlaycountAsync(const SongList &songs) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   for (const Song &song : songs) {
     SharedPtr<QMetaObject::Connection> connection = make_shared<QMetaObject::Connection>();
@@ -455,13 +518,14 @@ void TagReaderClient::SaveSongsPlaycountAsync(const SongList &songs) {
 
 TagReaderResult TagReaderClient::SaveSongRatingBlocking(const QString &filename, const float rating) {
 
+  QMutexLocker l(&mutex_write_);
   return tagreader_.SaveSongRating(filename, rating);
 
 }
 
 TagReaderReplyPtr TagReaderClient::SaveSongRatingAsync(const QString &filename, const float rating) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
 
@@ -478,7 +542,7 @@ TagReaderReplyPtr TagReaderClient::SaveSongRatingAsync(const QString &filename, 
 
 void TagReaderClient::SaveSongsRatingAsync(const SongList &songs) {
 
-  Q_ASSERT(QThread::currentThread() != thread());
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
 
   for (const Song &song : songs) {
     SharedPtr<QMetaObject::Connection> connection = make_shared<QMetaObject::Connection>();
@@ -487,5 +551,55 @@ void TagReaderClient::SaveSongsRatingAsync(const SongList &songs) {
       QObject::disconnect(*connection);
     }, Qt::QueuedConnection);
   }
+
+}
+
+TagReaderResult TagReaderClient::SaveSongLyricsBlocking(const QString &filename, const QString &lyrics) {
+
+  QMutexLocker l(&mutex_write_);
+  return tagreader_.SaveSongLyrics(filename, lyrics);
+
+}
+
+TagReaderReplyPtr TagReaderClient::SaveSongLyricsAsync(const QString &filename, const QString &lyrics) {
+
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
+
+  TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
+
+  TagReaderSaveLyricsRequestPtr request = TagReaderSaveLyricsRequest::Create(filename);
+  request->reply = reply;
+  request->filename = filename;
+  request->lyrics = lyrics;
+  request->synced = false;
+
+  EnqueueRequest(request);
+
+  return reply;
+
+}
+
+TagReaderResult TagReaderClient::SaveSongSyncedLyricsBlocking(const QString &filename, const QString &synced_lyrics) {
+
+  QMutexLocker l(&mutex_write_);
+  return tagreader_.SaveSongSyncedLyrics(filename, synced_lyrics);
+
+}
+
+TagReaderReplyPtr TagReaderClient::SaveSongSyncedLyricsAsync(const QString &filename, const QString &synced_lyrics) {
+
+  Q_ASSERT(exited_ || QThread::currentThread() != thread());
+
+  TagReaderReplyPtr reply = TagReaderReply::Create<TagReaderReply>(filename);
+
+  TagReaderSaveLyricsRequestPtr request = TagReaderSaveLyricsRequest::Create(filename);
+  request->reply = reply;
+  request->filename = filename;
+  request->lyrics = synced_lyrics;
+  request->synced = true;
+
+  EnqueueRequest(request);
+
+  return reply;
 
 }

@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 DELETE FROM schema_version;
 
-INSERT INTO schema_version (version) VALUES (25);
+INSERT INTO schema_version (version) VALUES (30);
 
 CREATE TABLE IF NOT EXISTS directories (
   path TEXT NOT NULL,
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -104,7 +106,11 @@ CREATE TABLE IF NOT EXISTS songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -131,6 +137,7 @@ CREATE TABLE IF NOT EXISTS subsonic_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -166,6 +173,7 @@ CREATE TABLE IF NOT EXISTS subsonic_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -195,7 +203,11 @@ CREATE TABLE IF NOT EXISTS subsonic_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -222,6 +234,7 @@ CREATE TABLE IF NOT EXISTS plex_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -257,6 +270,7 @@ CREATE TABLE IF NOT EXISTS plex_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -286,7 +300,11 @@ CREATE TABLE IF NOT EXISTS plex_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -313,6 +331,7 @@ CREATE TABLE IF NOT EXISTS tidal_artists_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -348,6 +367,7 @@ CREATE TABLE IF NOT EXISTS tidal_artists_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -377,7 +397,11 @@ CREATE TABLE IF NOT EXISTS tidal_artists_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -404,6 +428,7 @@ CREATE TABLE IF NOT EXISTS tidal_albums_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -439,6 +464,7 @@ CREATE TABLE IF NOT EXISTS tidal_albums_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -468,7 +494,11 @@ CREATE TABLE IF NOT EXISTS tidal_albums_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -495,6 +525,7 @@ CREATE TABLE IF NOT EXISTS tidal_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -530,6 +561,7 @@ CREATE TABLE IF NOT EXISTS tidal_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -559,7 +591,11 @@ CREATE TABLE IF NOT EXISTS tidal_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -586,6 +622,7 @@ CREATE TABLE IF NOT EXISTS spotify_artists_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -621,6 +658,7 @@ CREATE TABLE IF NOT EXISTS spotify_artists_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -650,7 +688,11 @@ CREATE TABLE IF NOT EXISTS spotify_artists_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -677,6 +719,7 @@ CREATE TABLE IF NOT EXISTS spotify_albums_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -712,6 +755,7 @@ CREATE TABLE IF NOT EXISTS spotify_albums_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -741,7 +785,11 @@ CREATE TABLE IF NOT EXISTS spotify_albums_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -768,6 +816,7 @@ CREATE TABLE IF NOT EXISTS spotify_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -803,6 +852,7 @@ CREATE TABLE IF NOT EXISTS spotify_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -832,7 +882,11 @@ CREATE TABLE IF NOT EXISTS spotify_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -859,6 +913,7 @@ CREATE TABLE IF NOT EXISTS qobuz_artists_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -894,6 +949,7 @@ CREATE TABLE IF NOT EXISTS qobuz_artists_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -923,7 +979,11 @@ CREATE TABLE IF NOT EXISTS qobuz_artists_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -950,6 +1010,7 @@ CREATE TABLE IF NOT EXISTS qobuz_albums_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -985,6 +1046,7 @@ CREATE TABLE IF NOT EXISTS qobuz_albums_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -1014,7 +1076,11 @@ CREATE TABLE IF NOT EXISTS qobuz_albums_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -1041,6 +1107,7 @@ CREATE TABLE IF NOT EXISTS qobuz_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -1076,6 +1143,7 @@ CREATE TABLE IF NOT EXISTS qobuz_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -1105,7 +1173,11 @@ CREATE TABLE IF NOT EXISTS qobuz_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -1132,6 +1204,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_artists_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -1167,6 +1240,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_artists_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -1196,7 +1270,11 @@ CREATE TABLE IF NOT EXISTS jellyfin_artists_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -1223,6 +1301,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_albums_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -1258,6 +1337,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_albums_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -1287,7 +1367,11 @@ CREATE TABLE IF NOT EXISTS jellyfin_albums_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -1314,6 +1398,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_songs (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -1349,6 +1434,7 @@ CREATE TABLE IF NOT EXISTS jellyfin_songs (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -1378,7 +1464,11 @@ CREATE TABLE IF NOT EXISTS jellyfin_songs (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -1426,6 +1516,7 @@ CREATE TABLE IF NOT EXISTS playlist_items (
   grouping TEXT,
   comment TEXT,
   lyrics TEXT,
+  synced_lyrics TEXT,
 
   artist_id TEXT,
   album_id TEXT,
@@ -1461,6 +1552,7 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 
   art_embedded INTEGER DEFAULT 0,
   art_automatic TEXT,
+  art_automatic_mtime INTEGER NOT NULL DEFAULT 0,
   art_manual TEXT,
   art_unset INTEGER DEFAULT 0,
 
@@ -1490,7 +1582,11 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 
   bpm REAL,
   mood TEXT,
-  initial_key TEXT
+  initial_key TEXT,
+
+  lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  synced_lyrics_storage_type INTEGER NOT NULL DEFAULT 0,
+  lrc_mtime INTEGER NOT NULL DEFAULT 0
 
 );
 
@@ -1511,9 +1607,7 @@ CREATE TABLE IF NOT EXISTS radio_channels (
   thumbnail_url TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_url ON songs (url);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_url_beginning ON songs (url, beginning);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_songs_url_beginning_cue_path ON songs (url, beginning, IFNULL(cue_path, ''));
 
 CREATE INDEX IF NOT EXISTS idx_comp_artist ON songs (compilation_effective, artist);
 
@@ -1527,14 +1621,14 @@ CREATE INDEX IF NOT EXISTS idx_artistsort ON songs (artistsort);
 
 CREATE INDEX IF NOT EXISTS idx_album ON songs (album);
 
-CREATE INDEX IF NOT EXISTS idx_albumsort ON songs (album);
+CREATE INDEX IF NOT EXISTS idx_albumsort ON songs (albumsort);
 
 CREATE INDEX IF NOT EXISTS idx_title ON songs (title);
 
-CREATE INDEX IF NOT EXISTS idx_titlesort ON songs (title);
+CREATE INDEX IF NOT EXISTS idx_titlesort ON songs (titlesort);
 
-CREATE INDEX IF NOT EXISTS idx_composersort ON songs (title);
+CREATE INDEX IF NOT EXISTS idx_composersort ON songs (composersort);
 
-CREATE INDEX IF NOT EXISTS idx_performersort ON songs (title);
+CREATE INDEX IF NOT EXISTS idx_performersort ON songs (performersort);
 
 CREATE VIEW IF NOT EXISTS duplicated_songs as select artist dup_artist, album dup_album, title dup_title from songs as inner_songs where artist != '' and album != '' and title != '' and unavailable = 0 group by artist, album , title having count(*) > 1;

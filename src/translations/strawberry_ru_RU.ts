@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation>Поддержка сортировки тегов артиста, альбома, исполнителя альбома, названия, композитора и исполнителя</translation>
@@ -1361,15 +1361,7 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Ваша фонотека пуста!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Нажмите сюда для добавления музыки</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Добавить в текущий плейлист</translation>
@@ -1393,6 +1385,17 @@ If there are no matches then it will use the largest image in the directory.</so
     <message>
       <source>Search for this</source>
       <translation>Поиск этого</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Ваша фонотека пуста!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Нажмите сюда для добавления музыки</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Заполнять тексты песен автоматически</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Текст песни</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(различные для нескольких песен)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Текст песни</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Предыдущий</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Следующий</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Сохранение треков</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Не удалось записать метаданные в %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Не удалось записать метаданные в %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Загрузка композиций</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>загружается…</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Не найдено.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Правка сведений о треке</translation>
@@ -7080,26 +7137,6 @@ Are you sure you want to continue?</source>
       <translation>Щёлкните сюда, чтобы получить музыку</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Добавить в текущий плейлист</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Заменить текущий плейлист</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Открыть в новом плейлисте</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Добавить трек в очередь</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Добавить в начало очереди</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Удалить из избранного</translation>
     </message>
@@ -7121,6 +7158,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>Обновить каталог</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Вид вкладок потоков</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Артисты</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Альбомы</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Песни</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Поиск</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Настроить %1…</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Настроить %1…</translation>
     </message>
   </context>
   <context>
@@ -7195,40 +7266,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>Группировать по</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Настроить %1…</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Вид вкладок потоков</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Артисты</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Альбомы</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Песни</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Поиск</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Настроить %1…</translation>
     </message>
   </context>
   <context>

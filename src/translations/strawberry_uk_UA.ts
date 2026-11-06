@@ -1178,7 +1178,7 @@
     </message>
   </context>
   <context>
-    <name>CollectionLibrary</name>
+    <name>CollectionManager</name>
     <message>
       <source>Support for sort tags artist, album, album artist, title, composer and performer</source>
       <translation type="unfinished">Support for sort tags artist, album, album artist, title, composer and performer</translation>
@@ -1361,15 +1361,7 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>CollectionView</name>
-    <message>
-      <source>Your collection is empty!</source>
-      <translation>Ваша фонотека порожня!</translation>
-    </message>
-    <message>
-      <source>Click here to add some music</source>
-      <translation>Клацніть тут, щоб додати музику</translation>
-    </message>
+    <name>CollectionTreeView</name>
     <message>
       <source>Append to current playlist</source>
       <translation>Додати до списку відтворення</translation>
@@ -1393,6 +1385,17 @@ If there are no matches then it will use the largest image in the directory.</so
     <message>
       <source>Search for this</source>
       <translation>Шукати наступне</translation>
+    </message>
+  </context>
+  <context>
+    <name>CollectionView</name>
+    <message>
+      <source>Your collection is empty!</source>
+      <translation>Ваша фонотека порожня!</translation>
+    </message>
+    <message>
+      <source>Click here to add some music</source>
+      <translation>Клацніть тут, щоб додати музику</translation>
     </message>
     <message>
       <source>Organize files...</source>
@@ -2243,7 +2246,61 @@ If there are no matches then it will use the largest image in the directory.</so
     </message>
   </context>
   <context>
-    <name>EditTagDialog</name>
+    <name>LyricsTab</name>
+    <message>
+      <source>Complete lyrics automatically</source>
+      <translation>Завантажити текст пісні</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Тексти пісень</translation>
+    </message>
+  </context>
+  <context>
+    <name>SongEditor</name>
+    <message>
+      <source>(different across multiple songs)</source>
+      <translation>(відрізняється поміж кількох композицій)</translation>
+    </message>
+    <message>
+      <source>Lyrics</source>
+      <translation>Тексти пісень</translation>
+    </message>
+    <message>
+      <source>Previous</source>
+      <translation>Попередня</translation>
+    </message>
+    <message>
+      <source>Next</source>
+      <translation>Наступна</translation>
+    </message>
+    <message>
+      <source>Saving tracks</source>
+      <translation>Збереження композицій</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1</source>
+      <translation>Не вдалось записати метадані в %1</translation>
+    </message>
+    <message>
+      <source>Could not write metadata to %1: %2</source>
+      <translation>Не вдалось записати метадані в %1: %2</translation>
+    </message>
+    <message>
+      <source>Loading tracks</source>
+      <translation>Завантаження композицій</translation>
+    </message>
+    <message>
+      <source>loading...</source>
+      <translation>завантаження...</translation>
+    </message>
+    <message>
+      <source>Not found.</source>
+      <translation>Не знайдено.</translation>
+    </message>
+  </context>
+  <context>
+    <name>TagEditor</name>
     <message>
       <source>Edit track information</source>
       <translation>Редагувати дані композиції</translation>
@@ -7080,26 +7137,6 @@ Are you sure you want to continue?</source>
       <translation>Клацніть тут, щоб отримати музику</translation>
     </message>
     <message>
-      <source>Append to current playlist</source>
-      <translation>Додати до списку відтворення</translation>
-    </message>
-    <message>
-      <source>Replace current playlist</source>
-      <translation>Замінити список відтворення</translation>
-    </message>
-    <message>
-      <source>Open in new playlist</source>
-      <translation>Відкрити у новому списку відтворення</translation>
-    </message>
-    <message>
-      <source>Queue track</source>
-      <translation>Додати до черги</translation>
-    </message>
-    <message>
-      <source>Queue to play next</source>
-      <translation>Відтворити наступним</translation>
-    </message>
-    <message>
       <source>Remove from favorites</source>
       <translation>Вилучити з улюблених</translation>
     </message>
@@ -7121,6 +7158,40 @@ Are you sure you want to continue?</source>
     <message>
       <source>Refresh catalogue</source>
       <translation>Оновити каталог</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingFavoritesView</name>
+    <message>
+      <source>Streaming Tabs View</source>
+      <translation>Подання з вкладками трансляцій</translation>
+    </message>
+    <message>
+      <source>Artists</source>
+      <translation>Виконавці</translation>
+    </message>
+    <message>
+      <source>Albums</source>
+      <translation>Альбоми</translation>
+    </message>
+    <message>
+      <source>Songs</source>
+      <translation>Композиції</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Пошук</translation>
+    </message>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Налаштувати %1...</translation>
+    </message>
+  </context>
+  <context>
+    <name>StreamingLibraryView</name>
+    <message>
+      <source>Configure %1...</source>
+      <translation>Налаштувати %1...</translation>
     </message>
   </context>
   <context>
@@ -7195,40 +7266,6 @@ Are you sure you want to continue?</source>
     <message>
       <source>Group by</source>
       <translation>Групувати за</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingSongsView</name>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Налаштувати %1...</translation>
-    </message>
-  </context>
-  <context>
-    <name>StreamingTabsView</name>
-    <message>
-      <source>Streaming Tabs View</source>
-      <translation>Подання з вкладками трансляцій</translation>
-    </message>
-    <message>
-      <source>Artists</source>
-      <translation>Виконавці</translation>
-    </message>
-    <message>
-      <source>Albums</source>
-      <translation>Альбоми</translation>
-    </message>
-    <message>
-      <source>Songs</source>
-      <translation>Композиції</translation>
-    </message>
-    <message>
-      <source>Search</source>
-      <translation>Пошук</translation>
-    </message>
-    <message>
-      <source>Configure %1...</source>
-      <translation>Налаштувати %1...</translation>
     </message>
   </context>
   <context>

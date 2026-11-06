@@ -149,7 +149,7 @@ void DiscordRPC::ConnectToDiscord() {
 
   for (const QString &temp_path : std::as_const(temp_paths)) {
     for (int i = 0; i < 10; ++i) {
-      connection_paths_ << "%1/discord-ipc-%2"_L1.arg(temp_path).arg(i);
+      connection_paths_ << "%1/discord-ipc-%2"_L1.arg(temp_path, QString::number(i));
     }
   }
 #endif
@@ -290,8 +290,12 @@ void DiscordRPC::ProcessIncomingData() {
     quint32 opcode_le = 0;
     quint32 length_le = 0;
 
+    // GCC warns that constData() may point to the 1 byte QByteArray::_empty, but the loop condition ensures the buffer holds the full header.
+    QT_WARNING_PUSH
+    QT_WARNING_DISABLE_GCC("-Warray-bounds")
     memcpy(&opcode_le, read_buffer_.constData(), sizeof(opcode_le));
     memcpy(&length_le, read_buffer_.constData() + sizeof(opcode_le), sizeof(length_le));
+    QT_WARNING_POP
 
     quint32 opcode = qFromLittleEndian(opcode_le);
     quint32 length = qFromLittleEndian(length_le);
@@ -366,6 +370,7 @@ void DiscordRPC::HandleMessage(const QByteArray &data) {
 
     if (cmd == "DISPATCH"_L1 && evt == "READY"_L1) {
       state_ = State::Connected;
+      Q_EMIT Ready();
     }
   }
 

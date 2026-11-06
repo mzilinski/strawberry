@@ -1,6 +1,6 @@
 /*
  * Strawberry Music Player
- * Copyright 2020, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2020-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,16 +22,37 @@
 #include "gtest_include.h"
 #include "gmock_include.h"
 
+#include <string>
+
 #include <QFile>
+#include <QPair>
+#include <QList>
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include <QCryptographicHash>
 #include <QThread>
 #include <QEventLoop>
+#include <QSemaphore>
+
+#include <taglib/tstring.h>
+#include <taglib/asffile.h>
+#include <taglib/asftag.h>
+#include <taglib/asfattribute.h>
+#include <taglib/mpegfile.h>
+#include <taglib/mp4file.h>
+#include <taglib/mp4tag.h>
+#include <taglib/mp4item.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/id3v2header.h>
+#include <taglib/popularimeterframe.h>
 
 #include "core/logging.h"
 #include "core/song.h"
 #include "tagreader/tagreaderclient.h"
+#include "tagreader/tagreadertaglib.h"
 
 #include "test_utils.h"
 
@@ -41,6 +62,13 @@ using namespace Qt::Literals::StringLiterals;
 // clazy:excludeall=non-pod-global-static
 
 namespace {
+
+// For opening files with TagLib directly, to create or check tags the tag reader doesn't write itself.
+#ifdef Q_OS_WIN32
+std::wstring TagLibFileName(const QString &filename) { return filename.toStdWString(); }
+#else
+QByteArray TagLibFileName(const QString &filename) { return QFile::encodeName(filename); }
+#endif
 
 class TagReaderTest : public ::testing::Test {
  protected:
@@ -76,13 +104,24 @@ class TagReaderTest : public ::testing::Test {
 
   }
 
-  void WriteSongToFile(const Song &song, const QString &filename) const {
+  TagReaderResult WriteSongToFile(const Song &song, const QString &filename) const {
 
     TagReaderReplyPtr reply = tagreader_client_->WriteFileAsync(filename, song, SaveTagsOption::Tags, SaveTagCoverData());
 
     QEventLoop loop;
     QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
     loop.exec();
+
+    return reply->result();
+
+  }
+
+  TagReaderResult WriteSyncedLyricsToFile(const QString &synced_lyrics, const QString &filename) const {
+
+    Song song;
+    song.set_synced_lyrics(synced_lyrics);
+    song.set_synced_lyrics_storage_type(Song::StorageType::Tag);
+    return WriteSongToFile(song, filename);
 
   }
 
@@ -109,6 +148,93 @@ class TagReaderTest : public ::testing::Test {
     QEventLoop loop;
     QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
     loop.exec();
+
+  }
+
+  TagReaderResult SaveLyricsToFile(const QString &lyrics, const QString &filename) const {
+
+    TagReaderReplyPtr reply = tagreader_client_->SaveSongLyricsAsync(filename, lyrics);
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    return reply->result();
+
+  }
+
+  TagReaderResult SaveSyncedLyricsToFile(const QString &synced_lyrics, const QString &filename) const {
+
+    TagReaderReplyPtr reply = tagreader_client_->SaveSongSyncedLyricsAsync(filename, synced_lyrics);
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    return reply->result();
+
+  }
+
+  // Saves, overwrites and clears the lyrics, and checks that the other tags are not changed.
+  void TestSaveLyrics(const QString &filename) const {
+
+    {
+      Song song;
+      song.set_title(u"strawberry title"_s);
+      song.set_artist(u"strawberry artist"_s);
+      EXPECT_TRUE(WriteSongToFile(song, filename).success());
+    }
+
+    EXPECT_TRUE(SaveLyricsToFile(u"strawberry lyrics"_s, filename).success());
+    {
+      const Song song = ReadSongFromFile(filename);
+      EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+      EXPECT_EQ(Song::StorageType::Tag, song.lyrics_storage_type());
+      EXPECT_EQ(u"strawberry title"_s, song.title());
+      EXPECT_EQ(u"strawberry artist"_s, song.artist());
+    }
+
+    EXPECT_TRUE(SaveLyricsToFile(u"new lyrics"_s, filename).success());
+    {
+      const Song song = ReadSongFromFile(filename);
+      EXPECT_EQ(u"new lyrics"_s, song.lyrics());
+      EXPECT_EQ(u"strawberry title"_s, song.title());
+      EXPECT_EQ(u"strawberry artist"_s, song.artist());
+    }
+
+    EXPECT_TRUE(SaveLyricsToFile(QString(), filename).success());
+    {
+      const Song song = ReadSongFromFile(filename);
+      EXPECT_TRUE(song.lyrics().isEmpty());
+      EXPECT_EQ(u"strawberry title"_s, song.title());
+    }
+
+  }
+
+  // Saves, overwrites and clears the synchronized lyrics, and checks that the plain lyrics are not changed.
+  void TestSaveSyncedLyrics(const QString &filename) const {
+
+    EXPECT_TRUE(SaveLyricsToFile(u"strawberry lyrics"_s, filename).success());
+
+    EXPECT_TRUE(SaveSyncedLyricsToFile(u"[00:01.00]Line one\n[00:02.50]Line two"_s, filename).success());
+    {
+      const Song song = ReadSongFromFile(filename);
+      EXPECT_EQ(u"[00:01.00]Line one\n[00:02.50]Line two"_s, song.synced_lyrics());
+      EXPECT_EQ(Song::StorageType::Tag, song.synced_lyrics_storage_type());
+      EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+    }
+
+    EXPECT_TRUE(SaveSyncedLyricsToFile(u"[00:03.00]New line"_s, filename).success());
+    {
+      const Song song = ReadSongFromFile(filename);
+      EXPECT_EQ(u"[00:03.00]New line"_s, song.synced_lyrics());
+      EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+    }
+
+    EXPECT_TRUE(SaveSyncedLyricsToFile(QString(), filename).success());
+    {
+      const Song song = ReadSongFromFile(filename);
+      EXPECT_TRUE(song.synced_lyrics().isEmpty());
+      EXPECT_EQ(u"strawberry lyrics"_s, song.lyrics());
+    }
 
   }
 
@@ -200,6 +326,7 @@ TEST_F(TagReaderTest, TestFLACAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -253,6 +380,7 @@ TEST_F(TagReaderTest, TestFLACAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -302,6 +430,7 @@ TEST_F(TagReaderTest, TestFLACAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -395,6 +524,7 @@ TEST_F(TagReaderTest, TestWavPackAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -436,6 +566,7 @@ TEST_F(TagReaderTest, TestWavPackAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -473,6 +604,7 @@ TEST_F(TagReaderTest, TestWavPackAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -560,6 +692,7 @@ TEST_F(TagReaderTest, TestOggFLACAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -601,6 +734,7 @@ TEST_F(TagReaderTest, TestOggFLACAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -638,6 +772,7 @@ TEST_F(TagReaderTest, TestOggFLACAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -725,6 +860,7 @@ TEST_F(TagReaderTest, TestOggVorbisAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -766,6 +902,7 @@ TEST_F(TagReaderTest, TestOggVorbisAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -802,6 +939,7 @@ TEST_F(TagReaderTest, TestOggVorbisAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -889,6 +1027,7 @@ TEST_F(TagReaderTest, TestOggOpusAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -930,6 +1069,7 @@ TEST_F(TagReaderTest, TestOggOpusAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -967,6 +1107,7 @@ TEST_F(TagReaderTest, TestOggOpusAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1054,6 +1195,7 @@ TEST_F(TagReaderTest, TestOggSpeexAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1095,6 +1237,7 @@ TEST_F(TagReaderTest, TestOggSpeexAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -1132,6 +1275,7 @@ TEST_F(TagReaderTest, TestOggSpeexAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1219,6 +1363,7 @@ TEST_F(TagReaderTest, TestAIFFAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1260,6 +1405,7 @@ TEST_F(TagReaderTest, TestAIFFAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -1297,6 +1443,7 @@ TEST_F(TagReaderTest, TestAIFFAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1384,6 +1531,7 @@ TEST_F(TagReaderTest, TestASFAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1426,6 +1574,7 @@ TEST_F(TagReaderTest, TestASFAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -1463,6 +1612,7 @@ TEST_F(TagReaderTest, TestASFAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1555,6 +1705,7 @@ TEST_F(TagReaderTest, TestMP3AudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1606,6 +1757,7 @@ TEST_F(TagReaderTest, TestMP3AudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -1653,6 +1805,7 @@ TEST_F(TagReaderTest, TestMP3AudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1745,6 +1898,7 @@ TEST_F(TagReaderTest, TestM4AAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -1786,6 +1940,7 @@ TEST_F(TagReaderTest, TestM4AAudioFileTagging) {
     song.set_genre(u"new genre"_s);
     song.set_comment(u"new comment"_s);
     song.set_lyrics(u"new lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(21);
     song.set_disc(4321);
     song.set_year(9102);
@@ -1823,6 +1978,7 @@ TEST_F(TagReaderTest, TestM4AAudioFileTagging) {
     song.set_genre(u"strawberry genre"_s);
     song.set_comment(u"strawberry comment"_s);
     song.set_lyrics(u"strawberry lyrics"_s);
+    song.set_lyrics_storage_type(Song::StorageType::Tag);
     song.set_track(12);
     song.set_disc(1234);
     song.set_year(2019);
@@ -2060,6 +2216,21 @@ TEST_F(TagReaderTest, TestMP3AudioFileCompilation) {
 
 }
 
+TEST_F(TagReaderTest, TestMP4AudioFileReadBPM) {
+
+  TemporaryResource r(u":/audio/strawberry.m4a"_s);
+
+  // The BPM is an integer item.
+  {
+    TagLib::MP4::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    file.tag()->setItem("tmpo", TagLib::MP4::Item(128));
+    ASSERT_TRUE(file.save());
+  }
+  EXPECT_EQ(128.0F, ReadSongFromFile(r.fileName()).bpm());
+
+}
+
 TEST_F(TagReaderTest, TestMP4AudioFileCompilation) {
 
   TemporaryResource r(u":/audio/strawberry.m4a"_s);
@@ -2241,6 +2412,85 @@ TEST_F(TagReaderTest, TestMP4AudioFilePlaycount) {
 
 }
 
+TEST_F(TagReaderTest, TestMP3AudioFileSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+
+  { // Multiple timestamps per line, fraction widths and sorting
+    EXPECT_TRUE(WriteSyncedLyricsToFile(u"[ar:strawberry artist]\n[00:01.00]Line one\n[00:02.50][00:10.25]Chorus\n\n[00:03.123]Precise\n[00:04.5]Tenths"_s, r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(u"[00:01.00]Line one\n[00:02.50]Chorus\n[00:03.123]Precise\n[00:04.50]Tenths\n[00:10.25]Chorus"_s, song.synced_lyrics());
+  }
+
+  { // Offset is applied to the timestamps, lines shifted before the start are clamped to zero
+    EXPECT_TRUE(WriteSyncedLyricsToFile(u"[offset:+500]\n[00:01.00]Line one\n[00:00.20]Line zero"_s, r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(u"[00:00.00]Line zero\n[00:00.50]Line one"_s, song.synced_lyrics());
+  }
+
+  { // Negative offset
+    EXPECT_TRUE(WriteSyncedLyricsToFile(u"[offset:-1500]\n[01:00.00]Line one"_s, r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(u"[01:01.50]Line one"_s, song.synced_lyrics());
+  }
+
+  { // Invalid LRC fails the write and leaves the existing lyrics alone
+    EXPECT_FALSE(WriteSyncedLyricsToFile(u"[00:01.00]Line one\nLine without timestamp"_s, r.fileName()).success());
+    EXPECT_FALSE(WriteSyncedLyricsToFile(u"Just plain lyrics"_s, r.fileName()).success());
+    EXPECT_FALSE(WriteSyncedLyricsToFile(u"[ar:strawberry artist]"_s, r.fileName()).success());
+    EXPECT_FALSE(WriteSyncedLyricsToFile(u"[00:75.00]Invalid seconds"_s, r.fileName()).success());
+    EXPECT_FALSE(WriteSyncedLyricsToFile(u"[99999999:00.00]Too large"_s, r.fileName()).success());
+    EXPECT_FALSE(WriteSyncedLyricsToFile(u"[offset:abc]\n[00:01.00]Invalid offset"_s, r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(u"[01:01.50]Line one"_s, song.synced_lyrics());
+  }
+
+  { // Clear
+    EXPECT_TRUE(WriteSyncedLyricsToFile(QString(), r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_TRUE(song.synced_lyrics().isEmpty());
+  }
+
+}
+
+TEST_F(TagReaderTest, TestFLACAudioFileSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+
+  { // Stored as is
+    const QString synced_lyrics = u"[ar:strawberry artist]\n[00:01.00]Line one\n[00:02.50][00:10.25]Chorus"_s;
+    EXPECT_TRUE(WriteSyncedLyricsToFile(synced_lyrics, r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(synced_lyrics, song.synced_lyrics());
+  }
+
+  { // Clear
+    EXPECT_TRUE(WriteSyncedLyricsToFile(QString(), r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_TRUE(song.synced_lyrics().isEmpty());
+  }
+
+}
+
+TEST_F(TagReaderTest, TestWavPackAudioFileSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.wv"_s);
+
+  { // Stored as is
+    const QString synced_lyrics = u"[00:01.00]Line one\n[00:02.50]Line two"_s;
+    EXPECT_TRUE(WriteSyncedLyricsToFile(synced_lyrics, r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(synced_lyrics, song.synced_lyrics());
+  }
+
+  { // Clear
+    EXPECT_TRUE(WriteSyncedLyricsToFile(QString(), r.fileName()).success());
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_TRUE(song.synced_lyrics().isEmpty());
+  }
+
+}
+
 TEST_F(TagReaderTest, TestFLACAudioFileRating) {
 
   TemporaryResource r(u":/audio/strawberry.flac"_s);
@@ -2360,6 +2610,207 @@ TEST_F(TagReaderTest, TestASFAudioFileRating) {
 
 }
 
+TEST_F(TagReaderTest, TestASFAudioFilePlaycountAndRatingReplaced) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+
+  {
+    Song song;
+    song.set_playcount(4);
+    song.set_rating(0.4F);
+    WriteSongPlaycountToFile(song, r.fileName());
+    WriteSongRatingToFile(song, r.fileName());
+  }
+
+  {
+    Song song;
+    song.set_playcount(5);
+    song.set_rating(0.8F);
+    WriteSongPlaycountToFile(song, r.fileName());
+    WriteSongRatingToFile(song, r.fileName());
+  }
+
+  {
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(5, song.playcount());
+    EXPECT_EQ(0.8F, song.rating());
+  }
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFileWritePlaycountAndRating) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+
+  {
+    Song song;
+    song.set_playcount(3);
+    song.set_rating(0.6F);
+    SaveTagsOptions save_tags_options;
+    save_tags_options.setFlag(SaveTagsOption::Playcount);
+    save_tags_options.setFlag(SaveTagsOption::Rating);
+    TagReaderReplyPtr reply = tagreader_client_->WriteFileAsync(r.fileName(), song, save_tags_options, SaveTagCoverData());
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    EXPECT_TRUE(reply->result().success());
+  }
+
+  {
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(3, song.playcount());
+    EXPECT_EQ(0.6F, song.rating());
+  }
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFileWritePlaycountAndRatingKeepsTags) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+
+  {
+    Song song;
+    song.set_albumartist(u"strawberry album artist"_s);
+    song.set_composer(u"strawberry composer"_s);
+    EXPECT_TRUE(WriteSongToFile(song, r.fileName()).success());
+  }
+
+  // Saving only the play count and rating should not touch the other tags.
+  {
+    Song song;
+    song.set_playcount(3);
+    song.set_rating(0.6F);
+    SaveTagsOptions save_tags_options;
+    save_tags_options.setFlag(SaveTagsOption::Playcount);
+    save_tags_options.setFlag(SaveTagsOption::Rating);
+    TagReaderReplyPtr reply = tagreader_client_->WriteFileAsync(r.fileName(), song, save_tags_options, SaveTagCoverData());
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    EXPECT_TRUE(reply->result().success());
+  }
+
+  {
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(u"strawberry album artist"_s, song.albumartist());
+    EXPECT_EQ(u"strawberry composer"_s, song.composer());
+    EXPECT_EQ(3, song.playcount());
+    EXPECT_EQ(0.6F, song.rating());
+  }
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFilePlaycountAndRatingRemoved) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+
+  {
+    Song song;
+    song.set_playcount(4);
+    song.set_rating(0.4F);
+    WriteSongPlaycountToFile(song, r.fileName());
+    WriteSongRatingToFile(song, r.fileName());
+  }
+
+  {
+    Song song;
+    song.set_playcount(0);
+    song.set_rating(0.0F);
+    WriteSongPlaycountToFile(song, r.fileName());
+    WriteSongRatingToFile(song, r.fileName());
+  }
+
+  {
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(0, song.playcount());
+    EXPECT_LE(song.rating(), 0.0F);
+  }
+
+  {
+    TagLib::ASF::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    EXPECT_FALSE(file.tag()->contains("FMPS/Playcount"));
+    EXPECT_FALSE(file.tag()->contains("FMPS/Rating"));
+  }
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFileReadDiscWithNumberOfDiscs) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+
+  // The disc can include the number of discs.
+  {
+    TagLib::ASF::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    file.tag()->setAttribute("WM/PartOfSet", TagLib::ASF::Attribute(TagLib::String("2/3")));
+    ASSERT_TRUE(file.save());
+  }
+  EXPECT_EQ(2, ReadSongFromFile(r.fileName()).disc());
+
+  // Some taggers write it as a number.
+  {
+    TagLib::ASF::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    file.tag()->setAttribute("WM/PartOfSet", TagLib::ASF::Attribute(static_cast<unsigned int>(4)));
+    ASSERT_TRUE(file.save());
+  }
+  EXPECT_EQ(4, ReadSongFromFile(r.fileName()).disc());
+
+  // Written by Strawberry.
+  Song song;
+  song.set_disc(5);
+  EXPECT_TRUE(WriteSongToFile(song, r.fileName()).success());
+  EXPECT_EQ(5, ReadSongFromFile(r.fileName()).disc());
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFileReadLegacyPlaycountAndRating) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+
+  // Older versions added a new value on every save, so the file has several values, and TagLib does not keep their order.
+  {
+    TagLib::ASF::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    file.tag()->addAttribute("FMPS/Playcount", TagLib::ASF::Attribute(TagLib::String("4")));
+    file.tag()->addAttribute("FMPS/Playcount", TagLib::ASF::Attribute(TagLib::String("5")));
+    file.tag()->addAttribute("FMPS/Rating", TagLib::ASF::Attribute(TagLib::String("0.4")));
+    file.tag()->addAttribute("FMPS/Rating", TagLib::ASF::Attribute(TagLib::String("0.8")));
+    ASSERT_TRUE(file.save());
+  }
+
+  {
+    const Song song = ReadSongFromFile(r.fileName());
+    // The highest play count is the most recent, but for the rating it can't be known, so it can be either of them.
+    EXPECT_EQ(5, song.playcount());
+    EXPECT_TRUE(song.rating() == 0.4F || song.rating() == 0.8F);
+  }
+
+  // Saving again replaces all the old values.
+  {
+    Song song;
+    song.set_playcount(6);
+    song.set_rating(0.6F);
+    WriteSongPlaycountToFile(song, r.fileName());
+    WriteSongRatingToFile(song, r.fileName());
+  }
+
+  {
+    TagLib::ASF::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    EXPECT_EQ(1U, file.tag()->attribute("FMPS/Playcount").size());
+    EXPECT_EQ(1U, file.tag()->attribute("FMPS/Rating").size());
+  }
+
+  {
+    const Song song = ReadSongFromFile(r.fileName());
+    EXPECT_EQ(6, song.playcount());
+    EXPECT_EQ(0.6F, song.rating());
+  }
+
+}
+
 TEST_F(TagReaderTest, TestMP3AudioFileRating) {
 
   TemporaryResource r(u":/audio/strawberry.mp3"_s);
@@ -2373,6 +2824,38 @@ TEST_F(TagReaderTest, TestMP3AudioFileRating) {
   {
     Song song = ReadSongFromFile(r.fileName());
     EXPECT_EQ(0.4F, song.rating());
+  }
+
+}
+
+// Ratings computed with floats can be slightly lower, like 0.59999996 for 3 stars, which should still be written as 3 stars.
+TEST_F(TagReaderTest, TestMP3AudioFilePOPMRatingRounding) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+
+  const auto popm_rating = [&r]() {
+    TagLib::MPEG::File file(TagLibFileName(r.fileName()).data());
+    if (!file.isValid() || !file.hasID3v2Tag()) return -1;
+    const TagLib::ID3v2::FrameList frames = file.ID3v2Tag()->frameListMap()["POPM"];
+    if (frames.isEmpty()) return -1;
+    const TagLib::ID3v2::PopularimeterFrame *frame = dynamic_cast<TagLib::ID3v2::PopularimeterFrame*>(frames.front());
+    return frame ? frame->rating() : -1;
+  };
+
+  const QList<QPair<float, int>> ratings = QList<QPair<float, int>>()
+    << qMakePair(1.0F / 5.0F, 0x01)
+    << qMakePair(2.0F / 5.0F, 0x40)
+    << qMakePair(0.59999996F, 0x80)
+    << qMakePair(3.0F / 5.0F, 0x80)
+    << qMakePair(0.79999995F, 0xC0)
+    << qMakePair(0.99999994F, 0xFF)
+    << qMakePair(0.5F, 0x40);
+
+  for (const QPair<float, int> &rating : ratings) {
+    Song song;
+    song.set_rating(rating.first);
+    WriteSongRatingToFile(song, r.fileName());
+    EXPECT_EQ(rating.second, popm_rating()) << "Rating " << rating.first;
   }
 
 }
@@ -2394,6 +2877,145 @@ TEST_F(TagReaderTest, TestMP4AudioFileRating) {
 
 }
 
+TEST_F(TagReaderTest, TestFLACAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestWavPackAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.wv"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggFLACAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.oga"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggVorbisAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.ogg"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggOpusAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.opus"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggSpeexAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.spx"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestMP3AudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestMP4AudioFileSaveLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.m4a"_s);
+  TestSaveLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestFLACAudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestWavPackAudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.wv"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggFLACAudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.oga"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggVorbisAudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.ogg"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggOpusAudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.opus"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestOggSpeexAudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.spx"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestMP3AudioFileSaveSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+  TestSaveSyncedLyrics(r.fileName());
+
+}
+
+TEST_F(TagReaderTest, TestMP3AudioFileSaveInvalidSyncedLyrics) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+
+  // Synchronized lyrics are converted to SYLT frames for ID3v2, so they need to be valid LRC, and the existing ones are kept otherwise.
+  EXPECT_TRUE(SaveSyncedLyricsToFile(u"[00:01.00]Line one"_s, r.fileName()).success());
+  EXPECT_FALSE(SaveSyncedLyricsToFile(u"Not LRC"_s, r.fileName()).success());
+
+  const Song song = ReadSongFromFile(r.fileName());
+  EXPECT_EQ(u"[00:01.00]Line one"_s, song.synced_lyrics());
+
+}
+
+TEST_F(TagReaderTest, TestMP4AudioFileSaveSyncedLyricsUnsupported) {
+
+  TemporaryResource r(u":/audio/strawberry.m4a"_s);
+  EXPECT_FALSE(SaveSyncedLyricsToFile(u"[00:01.00]Line one"_s, r.fileName()).success());
+
+}
+
+TEST_F(TagReaderTest, TestASFAudioFileSaveSyncedLyricsUnsupported) {
+
+  TemporaryResource r(u":/audio/strawberry.asf"_s);
+  EXPECT_FALSE(SaveSyncedLyricsToFile(u"[00:01.00]Line one"_s, r.fileName()).success());
+
+}
+
 TEST_F(TagReaderTest, TestFLACAudioFileCover) {
 
   TemporaryResource r(u":/audio/strawberry.flac"_s);
@@ -2408,6 +3030,54 @@ TEST_F(TagReaderTest, TestFLACAudioFileCover) {
   const QImage new_image = ReadCoverFromFile(r.fileName());
   EXPECT_TRUE(!new_image.isNull());
   EXPECT_EQ(new_image, original_image);
+
+}
+
+TEST_F(TagReaderTest, TestCoverThatCannotBeLoadedKeepsExistingCover) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+  const QString cover_filename = u":/pictures/strawberry.png"_s;
+
+  QImage original_image;
+  EXPECT_TRUE(original_image.load(cover_filename));
+
+  EXPECT_TRUE(WriteCoverToFile(r.fileName(), cover_filename).success());
+
+  // A cover file that does not exist.
+  EXPECT_FALSE(WriteCoverToFile(r.fileName(), SaveTagCoverData(u"/nonexistent/strawberry-cover.png"_s)).success());
+  EXPECT_EQ(ReadCoverFromFile(r.fileName()), original_image);
+
+  // Cover data that is not an image.
+  EXPECT_FALSE(WriteCoverToFile(r.fileName(), SaveTagCoverData(QByteArray("not an image"))).success());
+  EXPECT_EQ(ReadCoverFromFile(r.fileName()), original_image);
+
+  // Corrupt cover data with a JPEG or PNG mimetype.
+  EXPECT_FALSE(WriteCoverToFile(r.fileName(), SaveTagCoverData(QByteArray("\xff\xd8\xff\xe0 not a JPEG"), u"image/jpeg"_s)).success());
+  EXPECT_EQ(ReadCoverFromFile(r.fileName()), original_image);
+
+  QFile cover_file(cover_filename);
+  ASSERT_TRUE(cover_file.open(QIODevice::ReadOnly));
+  const QByteArray png_data = cover_file.readAll();
+  cover_file.close();
+  EXPECT_FALSE(WriteCoverToFile(r.fileName(), SaveTagCoverData(png_data.left(png_data.size() / 2), u"image/png"_s)).success());
+  EXPECT_EQ(ReadCoverFromFile(r.fileName()), original_image);
+
+  // Data with the wrong mimetype is converted.
+  EXPECT_TRUE(WriteCoverToFile(r.fileName(), SaveTagCoverData(png_data, u"image/jpeg"_s)).success());
+  EXPECT_FALSE(ReadCoverFromFile(r.fileName()).isNull());
+
+}
+
+TEST_F(TagReaderTest, TestEmptyCoverRemovesCover) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+  const QString cover_filename = u":/pictures/strawberry.png"_s;
+
+  EXPECT_TRUE(WriteCoverToFile(r.fileName(), cover_filename).success());
+  EXPECT_FALSE(ReadCoverFromFile(r.fileName()).isNull());
+
+  EXPECT_TRUE(WriteCoverToFile(r.fileName(), SaveTagCoverData()).success());
+  EXPECT_TRUE(ReadCoverFromFile(r.fileName()).isNull());
 
 }
 
@@ -2479,6 +3149,92 @@ TEST_F(TagReaderTest, TestMP3AudioFileCover) {
 
 }
 
+TEST_F(TagReaderTest, TestMP3AudioFileWithoutID3v2TagCover) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+  const QString cover_filename = u":/pictures/strawberry.png"_s;
+
+  {
+    TagLib::MPEG::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    ASSERT_TRUE(file.strip(TagLib::MPEG::File::ID3v2));
+  }
+
+  {
+    TagLib::MPEG::File file(TagLibFileName(r.fileName()).data());
+    ASSERT_TRUE(file.isValid());
+    ASSERT_FALSE(file.hasID3v2Tag());
+  }
+
+  QImage original_image;
+  EXPECT_TRUE(original_image.load(cover_filename));
+
+  TagReaderResult result = WriteCoverToFile(r.fileName(), cover_filename);
+  EXPECT_TRUE(result.success());
+
+  const QImage new_image = ReadCoverFromFile(r.fileName());
+  EXPECT_TRUE(!new_image.isNull());
+  EXPECT_EQ(new_image, original_image);
+
+}
+
+TEST_F(TagReaderTest, TestMP3KeepsID3v2VersionWhenSaving) {
+
+  TemporaryResource r(u":/audio/strawberry.mp3"_s);
+
+  const auto id3v2_version = [&r]() {
+    TagLib::MPEG::File file(TagLibFileName(r.fileName()).data());
+    return file.isValid() && file.hasID3v2Tag() ? static_cast<int>(file.ID3v2Tag()->header()->majorVersion()) : 0;
+  };
+
+  // Convert the tag to ID3v2.3.
+  Song song;
+  song.set_title(u"Strawberry"_s);
+  {
+    TagReaderReplyPtr reply = tagreader_client_->WriteFileAsync(r.fileName(), song, SaveTagsOption::Tags, SaveTagCoverData(), TagID3v2Version::V3);
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    ASSERT_TRUE(reply->result().success());
+  }
+  ASSERT_EQ(3, id3v2_version());
+
+  // Saving without an explicit version keeps ID3v2.3.
+  song.set_artist(u"Strawberry Artist"_s);
+  EXPECT_TRUE(WriteSongToFile(song, r.fileName()).success());
+  EXPECT_EQ(3, id3v2_version());
+
+  song.set_playcount(5);
+  WriteSongPlaycountToFile(song, r.fileName());
+  EXPECT_EQ(3, id3v2_version());
+
+  {
+    TagReaderReplyPtr reply = tagreader_client_->SaveSongRatingAsync(r.fileName(), 0.8F);
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    EXPECT_TRUE(reply->result().success());
+  }
+  EXPECT_EQ(3, id3v2_version());
+
+  EXPECT_TRUE(SaveLyricsToFile(u"strawberry lyrics"_s, r.fileName()).success());
+  EXPECT_EQ(3, id3v2_version());
+
+  EXPECT_TRUE(WriteCoverToFile(r.fileName(), u":/pictures/strawberry.png"_s).success());
+  EXPECT_EQ(3, id3v2_version());
+
+  // An explicit version is still used.
+  {
+    TagReaderReplyPtr reply = tagreader_client_->WriteFileAsync(r.fileName(), song, SaveTagsOption::Tags, SaveTagCoverData(), TagID3v2Version::V4);
+    QEventLoop loop;
+    QObject::connect(&*reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    EXPECT_TRUE(reply->result().success());
+  }
+  EXPECT_EQ(4, id3v2_version());
+
+}
+
 TEST_F(TagReaderTest, TestMP4AudioFileCover) {
 
   TemporaryResource r(u":/audio/strawberry.mp4"_s);
@@ -2493,6 +3249,187 @@ TEST_F(TagReaderTest, TestMP4AudioFileCover) {
   const QImage new_image = ReadCoverFromFile(r.fileName());
   EXPECT_TRUE(!new_image.isNull());
   EXPECT_EQ(new_image, original_image);
+
+}
+
+// Regression test: a loop sample count larger than the sample count in a VGM header must not make the length underflow.
+TEST(TagReaderGMETest, VGMPlaybackLength) {
+
+  const auto pack = [](const quint32 value) {
+    QByteArray bytes(4, '\0');
+    for (int i = 0; i < 4; ++i) bytes[i] = static_cast<char>((value >> (8 * i)) & 0xFF);
+    return bytes;
+  };
+
+  quint64 length = 0;
+
+  // 10 seconds without a loop.
+  ASSERT_TRUE(GME::VGM::GetPlaybackLength(pack(441000), pack(0), length));
+  EXPECT_EQ(10000ULL, length);
+
+  // 2 seconds intro and 8 seconds loop, played twice, plus the fade out.
+  ASSERT_TRUE(GME::VGM::GetPlaybackLength(pack(441000), pack(352800), length));
+  EXPECT_EQ(2000ULL + (8000ULL * 2) + GME::VGM::GST_GME_LOOP_TIME_MS, length);
+
+  // A loop longer than the song is ignored.
+  ASSERT_TRUE(GME::VGM::GetPlaybackLength(pack(441000), pack(441001), length));
+  EXPECT_EQ(10000ULL, length);
+
+  EXPECT_FALSE(GME::VGM::GetPlaybackLength(pack(0), pack(0), length));
+
+}
+
+// Regression test: non-ASCII titles in SPC files were garbled, since they were decoded as Latin-1 twice.
+TEST(TagReaderGMETest, SPCNonASCIIStrings) {
+
+  QByteArray data(0x10200, '\0');
+  data.replace(0, 33, "SNES-SPC700 Sound File Data v0.30");
+  const auto set_field = [&data](const int offset, const QByteArray &value) { data.replace(offset, static_cast<int>(value.size()), value); };
+  set_field(GME::SPC::SONG_TITLE_OFFSET, "Caf\xe9");
+  set_field(GME::SPC::GAME_TITLE_OFFSET, "Gr\xfc\xdf" "e");
+  set_field(GME::SPC::ARTIST_OFFSET, "Bj\xf6rk");
+
+  QTemporaryDir temp_dir;
+  ASSERT_TRUE(temp_dir.isValid());
+  const QString filename = temp_dir.filePath(u"test.spc"_s);
+  QFile file(filename);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  ASSERT_EQ(data.size(), file.write(data));
+  file.close();
+
+  Song song;
+  ASSERT_TRUE(GME::ReadFile(QFileInfo(filename), &song).success());
+  EXPECT_EQ(u"Café"_s, song.title());
+  EXPECT_EQ(u"Grüße"_s, song.album());
+  EXPECT_EQ(u"Björk"_s, song.artist());
+
+}
+
+// Regression test: non-ASCII titles in VGM files were garbled, since they were decoded as UTF-16, then encoded as UTF-8 and decoded as Latin-1.
+TEST(TagReaderGMETest, VGMNonASCIIStrings) {
+
+  const auto pack = [](const quint32 value) {
+    QByteArray bytes(4, '\0');
+    for (int i = 0; i < 4; ++i) bytes[i] = static_cast<char>((value >> (8 * i)) & 0xFF);
+    return bytes;
+  };
+
+  // The GD3 strings are UTF-16LE, each terminated by a null character, in the order title, title (Japanese), album, album (Japanese), system, system (Japanese), artist, artist (Japanese), date, dumper and notes.
+  const QStringList strings = { u"Café"_s, u"カフェ"_s, u"Grüße"_s, QString(), QString(), QString(), u"Björk"_s, QString(), u"1994/01/01"_s, QString(), QString() };
+  QByteArray gd3_strings;
+  for (const QString &string : strings) {
+    for (const QChar c : string) {
+      gd3_strings.append(static_cast<char>(c.unicode() & 0xFF));
+      gd3_strings.append(static_cast<char>(c.unicode() >> 8));
+    }
+    gd3_strings.append(2, '\0');
+  }
+
+  QByteArray data(0x40, '\0');
+  data.replace(0, 4, "Vgm ");
+  data.replace(GME::VGM::SAMPLE_COUNT, 4, pack(441000));
+  data.replace(GME::VGM::GD3_TAG_PTR, 4, pack(static_cast<quint32>(data.size() - GME::VGM::GD3_TAG_PTR)));
+  data.append("Gd3 ");
+  data.append(pack(0x100));
+  data.append(pack(static_cast<quint32>(gd3_strings.size())));
+  data.append(gd3_strings);
+
+  QTemporaryDir temp_dir;
+  ASSERT_TRUE(temp_dir.isValid());
+  const QString filename = temp_dir.filePath(u"test.vgm"_s);
+  QFile file(filename);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  ASSERT_EQ(data.size(), file.write(data));
+  file.close();
+
+  Song song;
+  ASSERT_TRUE(GME::ReadFile(QFileInfo(filename), &song).success());
+  EXPECT_EQ(u"Café"_s, song.title());
+  EXPECT_EQ(u"Grüße"_s, song.album());
+  EXPECT_EQ(u"Björk"_s, song.artist());
+  EXPECT_EQ(1994, song.year());
+
+}
+
+TEST_F(TagReaderTest, TestExitWritesQueuedRequests) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+
+  // Block the tagreader thread, and queue the exit before the requests, so Exit() runs before the requests are processed, and has to write them itself.
+  QSemaphore blocker;
+  QMetaObject::invokeMethod(tagreader_client_, [&blocker]() { blocker.acquire(); }, Qt::QueuedConnection);
+
+  // Wait for the exit without an event loop, since the queued ProcessRequests() is moved to this thread with the tagreader, and would otherwise process the requests here.
+  QSemaphore exit_finished;
+  QObject::connect(tagreader_client_, &TagReaderClient::ExitFinished, tagreader_client_, [&exit_finished]() { exit_finished.release(); }, Qt::DirectConnection);
+  tagreader_client_->ExitAsync();
+
+  TagReaderReadFileReplyPtr read_reply = tagreader_client_->ReadFileAsync(r.fileName());
+  TagReaderReplyPtr playcount_reply = tagreader_client_->SaveSongPlaycountAsync(r.fileName(), 42);
+  TagReaderReplyPtr lyrics_reply = tagreader_client_->SaveSongLyricsAsync(r.fileName(), u"Lyrics saved when exiting"_s);
+
+  blocker.release();
+  ASSERT_TRUE(exit_finished.tryAcquire(1, 10000));
+
+  // Reading the file is not needed anymore when exiting, but the changes to the tags are written.
+  EXPECT_FALSE(read_reply->finished());
+  EXPECT_TRUE(playcount_reply->finished());
+  EXPECT_TRUE(playcount_reply->success());
+  EXPECT_TRUE(lyrics_reply->finished());
+  EXPECT_TRUE(lyrics_reply->success());
+
+  Song song;
+  ASSERT_TRUE(TagReaderTagLib().ReadFile(r.fileName(), &song).success());
+  EXPECT_EQ(42U, song.playcount());
+  EXPECT_EQ(u"Lyrics saved when exiting"_s, song.lyrics());
+
+}
+
+TEST_F(TagReaderTest, TestAbortReadsKeepsWrites) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+
+  // Block the tagreader thread, so both requests are queued when the reads are aborted.
+  QSemaphore blocker;
+  QMetaObject::invokeMethod(tagreader_client_, [&blocker]() { blocker.acquire(); }, Qt::QueuedConnection);
+
+  tagreader_client_->AbortReads();
+  TagReaderReadFileReplyPtr read_reply = tagreader_client_->ReadFileAsync(r.fileName());
+  TagReaderReplyPtr playcount_reply = tagreader_client_->SaveSongPlaycountAsync(r.fileName(), 5);
+
+  QEventLoop loop;
+  QObject::connect(&*playcount_reply, &TagReaderReply::Finished, &loop, &QEventLoop::quit);
+  blocker.release();
+  loop.exec();
+
+  // The reads are dropped when the application starts exiting, before the tagreader exits, but the writes are still processed.
+  EXPECT_FALSE(read_reply->finished());
+  EXPECT_TRUE(playcount_reply->finished());
+  EXPECT_TRUE(playcount_reply->success());
+
+}
+
+TEST_F(TagReaderTest, TestRequestsAfterExit) {
+
+  TemporaryResource r(u":/audio/strawberry.flac"_s);
+
+  QEventLoop loop;
+  QObject::connect(tagreader_client_, &TagReaderClient::ExitFinished, &loop, &QEventLoop::quit);
+  tagreader_client_->ExitAsync();
+  loop.exec();
+
+  // Requests made after exiting, from the thread the tagreader moved back to, for example when a write finished during exiting and the file is read again.
+  // Reading is not done, writing is done directly.
+  TagReaderReadFileReplyPtr read_reply = tagreader_client_->ReadFileAsync(r.fileName());
+  TagReaderReplyPtr playcount_reply = tagreader_client_->SaveSongPlaycountAsync(r.fileName(), 9);
+
+  EXPECT_FALSE(read_reply->finished());
+  EXPECT_TRUE(playcount_reply->finished());
+  EXPECT_TRUE(playcount_reply->success());
+
+  Song song;
+  ASSERT_TRUE(TagReaderTagLib().ReadFile(r.fileName(), &song).success());
+  EXPECT_EQ(9U, song.playcount());
 
 }
 

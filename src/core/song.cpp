@@ -2,7 +2,7 @@
  * Strawberry Music Player
  * This file was part of Clementine.
  * Copyright 2010, David Sansome <me@davidsansome.com>
- * Copyright 2018-2025, Jonas Kvinge <jonas@jkvinge.net>
+ * Copyright 2018-2026, Jonas Kvinge <jonas@jkvinge.net>
  *
  * Strawberry is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -88,6 +88,7 @@ const QStringList Song::kColumns = QStringList() << u"title"_s
                                                  << u"grouping"_s
                                                  << u"comment"_s
                                                  << u"lyrics"_s
+                                                 << u"synced_lyrics"_s
 
                                                  << u"artist_id"_s
                                                  << u"album_id"_s
@@ -123,6 +124,7 @@ const QStringList Song::kColumns = QStringList() << u"title"_s
 
                                                  << u"art_embedded"_s
                                                  << u"art_automatic"_s
+                                                 << u"art_automatic_mtime"_s
                                                  << u"art_manual"_s
                                                  << u"art_unset"_s
 
@@ -135,6 +137,10 @@ const QStringList Song::kColumns = QStringList() << u"title"_s
                                                  << u"bpm"_s
                                                  << u"mood"_s
                                                  << u"initial_key"_s
+
+                                                 << u"lyrics_storage_type"_s
+                                                 << u"synced_lyrics_storage_type"_s
+                                                 << u"lrc_mtime"_s
 
                                                  << u"acoustid_id"_s
                                                  << u"acoustid_fingerprint"_s
@@ -176,6 +182,7 @@ const QStringList Song::kTextSearchColumns = QStringList()      << u"title"_s
 
 const QStringList Song::kIntSearchColumns = QStringList()       << u"track"_s
                                                                 << u"year"_s
+                                                                << u"originalyear"_s
                                                                 << u"samplerate"_s
                                                                 << u"bitdepth"_s
                                                                 << u"bitrate"_s;
@@ -264,6 +271,26 @@ const QStringList Song::kRejectedExtensions = QStringList() << u"tmp"_s
                                                             << u"zst"_s
                                                             << u"lrc"_s;
 
+namespace {
+
+// Unknown values are treated as no lyrics stored.
+Song::StorageType StorageTypeFromInt(const int value) {
+
+  switch (value) {
+    case static_cast<int>(Song::StorageType::Database):
+      return Song::StorageType::Database;
+    case static_cast<int>(Song::StorageType::Tag):
+      return Song::StorageType::Tag;
+    case static_cast<int>(Song::StorageType::File):
+      return Song::StorageType::File;
+    default:
+      return Song::StorageType::None;
+  }
+
+}
+
+}  // namespace
+
 struct Song::Private : public QSharedData {
 
   explicit Private(Source source = Source::Unknown);
@@ -293,6 +320,7 @@ struct Song::Private : public QSharedData {
   QString grouping_;
   QString comment_;
   QString lyrics_;
+  QString synced_lyrics_;
 
   QString artist_id_;
   QString album_id_;
@@ -328,6 +356,7 @@ struct Song::Private : public QSharedData {
 
   bool art_embedded_;           // if the song has embedded album cover art.
   QUrl art_automatic_;          // Guessed by CollectionWatcher.
+  qint64 art_automatic_mtime_;  // Modification time in milliseconds of the automatic album cover file, 0 if there is none.
   QUrl art_manual_;             // Set by the user - should take priority.
   bool art_unset_;              // If the art was unset by the user.
 
@@ -337,6 +366,10 @@ struct Song::Private : public QSharedData {
   float bpm_;
   QString mood_;
   QString initial_key_;
+
+  StorageType lyrics_storage_type_;
+  StorageType synced_lyrics_storage_type_;
+  qint64 lrc_mtime_;  // Modification time in milliseconds of the LRC file with synchronized lyrics next to the media file, 0 if there is none.
 
   QString acoustid_id_;
   QString acoustid_fingerprint_;
@@ -402,10 +435,16 @@ Song::Private::Private(const Source source)
       compilation_off_(false),
 
       art_embedded_(false),
+      art_automatic_mtime_(0),
       art_unset_(false),
 
       rating_(-1),
       bpm_(-1),
+
+      // Set when lyrics are read from the tags or an LRC file, or saved to the database.
+      lyrics_storage_type_(StorageType::None),
+      synced_lyrics_storage_type_(StorageType::None),
+      lrc_mtime_(0),
 
       id3v2_version_(0),
 
@@ -455,6 +494,7 @@ const QString &Song::performersort() const { return d->performersort_; }
 const QString &Song::grouping() const { return d->grouping_; }
 const QString &Song::comment() const { return d->comment_; }
 const QString &Song::lyrics() const { return d->lyrics_; }
+const QString &Song::synced_lyrics() const { return d->synced_lyrics_; }
 
 QString Song::artist_id() const { return d->artist_id_.isNull() ? ""_L1 : d->artist_id_; }
 QString Song::album_id() const { return d->album_id_.isNull() ? ""_L1 : d->album_id_; }
@@ -492,6 +532,7 @@ bool Song::compilation_on() const { return d->compilation_on_; }
 
 bool Song::art_embedded() const { return d->art_embedded_; }
 const QUrl &Song::art_automatic() const { return d->art_automatic_; }
+qint64 Song::art_automatic_mtime() const { return d->art_automatic_mtime_; }
 const QUrl &Song::art_manual() const { return d->art_manual_; }
 bool Song::art_unset() const { return d->art_unset_; }
 
@@ -501,6 +542,10 @@ float Song::rating() const { return d->rating_; }
 float Song::bpm() const { return d->bpm_; }
 const QString &Song::mood() const { return d->mood_; }
 const QString &Song::initial_key() const { return d->initial_key_; }
+
+Song::StorageType Song::lyrics_storage_type() const { return d->lyrics_storage_type_; }
+Song::StorageType Song::synced_lyrics_storage_type() const { return d->synced_lyrics_storage_type_; }
+qint64 Song::lrc_mtime() const { return d->lrc_mtime_; }
 
 const QString &Song::acoustid_id() const { return d->acoustid_id_; }
 const QString &Song::acoustid_fingerprint() const { return d->acoustid_fingerprint_; }
@@ -531,6 +576,7 @@ QString *Song::mutable_performer() { return &d->performer_; }
 QString *Song::mutable_grouping() { return &d->grouping_; }
 QString *Song::mutable_comment() { return &d->comment_; }
 QString *Song::mutable_lyrics() { return &d->lyrics_; }
+QString *Song::mutable_synced_lyrics() { return &d->synced_lyrics_; }
 QString *Song::mutable_acoustid_id() { return &d->acoustid_id_; }
 QString *Song::mutable_acoustid_fingerprint() { return &d->acoustid_fingerprint_; }
 QString *Song::mutable_musicbrainz_album_artist_id() { return &d->musicbrainz_album_artist_id_; }
@@ -575,6 +621,7 @@ void Song::set_performersort(const QString &v) { d->performersort_ = v; }
 void Song::set_grouping(const QString &v) { d->grouping_ = v; }
 void Song::set_comment(const QString &v) { d->comment_ = v; }
 void Song::set_lyrics(const QString &v) { d->lyrics_ = v; }
+void Song::set_synced_lyrics(const QString &v) { d->synced_lyrics_ = v; }
 
 void Song::set_artist_id(const QString &v) { d->artist_id_ = v; }
 void Song::set_album_id(const QString &v) { d->album_id_ = v; }
@@ -610,7 +657,16 @@ void Song::set_compilation_on(const bool v) { d->compilation_on_ = v; }
 void Song::set_compilation_off(const bool v) { d->compilation_off_ = v; }
 
 void Song::set_art_embedded(const bool v) { d->art_embedded_ = v; }
-void Song::set_art_automatic(const QUrl &v) { d->art_automatic_ = v; }
+void Song::set_art_automatic(const QUrl &v) {
+
+  // The mtime is for the cover file, it does not apply to a different file, the collection watcher sets the new file's mtime.
+  if (v != d->art_automatic_) {
+    d->art_automatic_mtime_ = 0;
+  }
+  d->art_automatic_ = v;
+
+}
+void Song::set_art_automatic_mtime(const qint64 v) { d->art_automatic_mtime_ = v; }
 void Song::set_art_manual(const QUrl &v) { d->art_manual_ = v; }
 void Song::set_art_unset(const bool v) { d->art_unset_ = v; }
 
@@ -620,6 +676,10 @@ void Song::set_rating(const float v) { d->rating_ = v; }
 void Song::set_bpm(const float v) { d->bpm_ = v; }
 void Song::set_mood(const QString &v) { d->mood_ = v; }
 void Song::set_initial_key(const QString &v) { d->initial_key_ = v; }
+
+void Song::set_lyrics_storage_type(const StorageType v) { d->lyrics_storage_type_ = v; }
+void Song::set_synced_lyrics_storage_type(const StorageType v) { d->synced_lyrics_storage_type_ = v; }
+void Song::set_lrc_mtime(const qint64 v) { d->lrc_mtime_ = v; }
 
 void Song::set_acoustid_id(const QString &v) { d->acoustid_id_ = v; }
 void Song::set_acoustid_fingerprint(const QString &v) { d->acoustid_fingerprint_ = v; }
@@ -662,6 +722,7 @@ void Song::set_performersort(const TagLib::String &v) { d->performersort_ = TagL
 void Song::set_grouping(const TagLib::String &v) { d->grouping_ = TagLibStringToQString(v); }
 void Song::set_comment(const TagLib::String &v) { d->comment_ = TagLibStringToQString(v); }
 void Song::set_lyrics(const TagLib::String &v) { d->lyrics_ = TagLibStringToQString(v); }
+void Song::set_synced_lyrics(const TagLib::String &v) { d->synced_lyrics_ = TagLibStringToQString(v); }
 void Song::set_artist_id(const TagLib::String &v) { d->artist_id_ = TagLibStringToQString(v); }
 void Song::set_album_id(const TagLib::String &v) { d->album_id_ = TagLibStringToQString(v); }
 void Song::set_song_id(const TagLib::String &v) { d->song_id_ = TagLibStringToQString(v); }
@@ -713,7 +774,12 @@ bool Song::art_manual_is_valid() const {
   return !d->art_manual_.isEmpty() && d->art_manual_.isValid() && (!d->art_manual_.isLocalFile() || (d->art_manual_.isLocalFile() && QFile::exists(d->art_manual_.toLocalFile())));
 }
 bool Song::has_valid_art() const { return art_embedded() || art_automatic_is_valid() || art_manual_is_valid(); }
-void Song::clear_art_automatic() { d->art_automatic_.clear(); }
+void Song::clear_art_automatic() {
+
+  d->art_automatic_.clear();
+  d->art_automatic_mtime_ = 0;
+
+}
 void Song::clear_art_manual() { d->art_manual_.clear(); }
 
 bool Song::write_tags_supported() const {
@@ -814,6 +880,20 @@ bool Song::comment_supported() const {
 
 bool Song::lyrics_supported() const {
   return additional_tags_supported() || d->filetype_ == FileType::ASF;
+}
+
+bool Song::synced_lyrics_supported() const {
+  return d->filetype_ == FileType::FLAC ||
+         d->filetype_ == FileType::OggFlac ||
+         d->filetype_ == FileType::OggVorbis ||
+         d->filetype_ == FileType::OggOpus ||
+         d->filetype_ == FileType::OggSpeex ||
+         d->filetype_ == FileType::MPEG ||
+         d->filetype_ == FileType::MPC ||
+         d->filetype_ == FileType::APE ||
+         d->filetype_ == FileType::WavPack ||
+         d->filetype_ == FileType::WAV ||
+         d->filetype_ == FileType::AIFF;
 }
 
 bool Song::albumartistsort_supported() const {
@@ -1008,6 +1088,7 @@ bool Song::IsMetadataEqual(const Song &other) const {
          d->grouping_ == other.d->grouping_ &&
          d->comment_ == other.d->comment_ &&
          d->lyrics_ == other.d->lyrics_ &&
+         d->synced_lyrics_ == other.d->synced_lyrics_ &&
          d->artist_id_ == other.d->artist_id_ &&
          d->album_id_ == other.d->album_id_ &&
          d->song_id_ == other.d->song_id_ &&
@@ -1074,8 +1155,18 @@ bool Song::IsArtEqual(const Song &other) const {
 
   return d->art_embedded_ == other.d->art_embedded_ &&
          d->art_automatic_ == other.d->art_automatic_ &&
+         d->art_automatic_mtime_ == other.d->art_automatic_mtime_ &&
          d->art_manual_ == other.d->art_manual_ &&
          d->art_unset_ == other.d->art_unset_;
+
+}
+
+bool Song::IsLyricsStorageEqual(const Song &other) const {
+
+  // Where the lyrics are stored, this is not tag metadata, so it is not part of IsMetadataEqual().
+  return d->lyrics_storage_type_ == other.d->lyrics_storage_type_ &&
+         d->synced_lyrics_storage_type_ == other.d->synced_lyrics_storage_type_ &&
+         d->lrc_mtime_ == other.d->lrc_mtime_;
 
 }
 
@@ -1113,6 +1204,7 @@ bool Song::IsEqual(const Song &other) const {
   return IsFileInfoEqual(other) &&
          IsSettingsEqual(other) &&
          IsAllMetadataEqual(other) &&
+         IsLyricsStorageEqual(other) &&
          IsFingerprintEqual(other) &&
          IsCompilationEqual(other);
 
@@ -1594,6 +1686,7 @@ void Song::InitFromQuery(const QSqlRecord &r, const bool reliable_metadata, cons
   d->grouping_ = SqlHelper::ValueToString(r, ColumnIndex(u"grouping"_s) + col);
   d->comment_ = SqlHelper::ValueToString(r, ColumnIndex(u"comment"_s) + col);
   d->lyrics_ = SqlHelper::ValueToString(r, ColumnIndex(u"lyrics"_s) + col);
+  d->synced_lyrics_ = SqlHelper::ValueToString(r, ColumnIndex(u"synced_lyrics"_s) + col);
   d->artist_id_ = SqlHelper::ValueToString(r, ColumnIndex(u"artist_id"_s) + col);
   d->album_id_ = SqlHelper::ValueToString(r, ColumnIndex(u"album_id"_s) + col);
   d->song_id_ = SqlHelper::ValueToString(r, ColumnIndex(u"song_id"_s) + col);
@@ -1628,6 +1721,7 @@ void Song::InitFromQuery(const QSqlRecord &r, const bool reliable_metadata, cons
 
   d->art_embedded_ = SqlHelper::ValueToBool(r, ColumnIndex(u"art_embedded"_s) + col);
   d->art_automatic_ = QUrl::fromEncoded(SqlHelper::ValueToString(r, ColumnIndex(u"art_automatic"_s) + col).toUtf8());
+  d->art_automatic_mtime_ = SqlHelper::ValueToLongLong(r, ColumnIndex(u"art_automatic_mtime"_s) + col);
   d->art_manual_ = QUrl::fromEncoded(SqlHelper::ValueToString(r, ColumnIndex(u"art_manual"_s) + col).toUtf8());
   d->art_unset_ = SqlHelper::ValueToBool(r, ColumnIndex(u"art_unset"_s) + col);
 
@@ -1637,6 +1731,10 @@ void Song::InitFromQuery(const QSqlRecord &r, const bool reliable_metadata, cons
   d->bpm_ = SqlHelper::ValueToFloat(r, ColumnIndex(u"bpm"_s) + col);
   d->mood_ = SqlHelper::ValueToString(r, ColumnIndex(u"mood"_s) + col);
   d->initial_key_ = SqlHelper::ValueToString(r, ColumnIndex(u"initial_key"_s) + col);
+
+  d->lyrics_storage_type_ = StorageTypeFromInt(SqlHelper::ValueToInt(r, ColumnIndex(u"lyrics_storage_type"_s) + col));
+  d->synced_lyrics_storage_type_ = StorageTypeFromInt(SqlHelper::ValueToInt(r, ColumnIndex(u"synced_lyrics_storage_type"_s) + col));
+  d->lrc_mtime_ = SqlHelper::ValueToLongLong(r, ColumnIndex(u"lrc_mtime"_s) + col);
 
   d->acoustid_id_ = SqlHelper::ValueToString(r, ColumnIndex(u"acoustid_id"_s) + col);
   d->acoustid_fingerprint_ = SqlHelper::ValueToString(r, ColumnIndex(u"acoustid_fingerprint"_s) + col);
@@ -1934,6 +2032,7 @@ void Song::BindToQuery(SqlQuery *query) const {
   query->BindStringValue(u":grouping"_s, d->grouping_);
   query->BindStringValue(u":comment"_s, d->comment_);
   query->BindStringValue(u":lyrics"_s, d->lyrics_);
+  query->BindStringValue(u":synced_lyrics"_s, d->synced_lyrics_);
 
   query->BindStringValue(u":artist_id"_s, d->artist_id_);
   query->BindStringValue(u":album_id"_s, d->album_id_);
@@ -1969,6 +2068,7 @@ void Song::BindToQuery(SqlQuery *query) const {
 
   query->BindBoolValue(u":art_embedded"_s, d->art_embedded_);
   query->BindUrlValue(u":art_automatic"_s, d->art_automatic_);
+  query->BindLongLongValueOrZero(u":art_automatic_mtime"_s, d->art_automatic_mtime_);
   query->BindUrlValue(u":art_manual"_s, d->art_manual_);
   query->BindBoolValue(u":art_unset"_s, d->art_unset_);
 
@@ -1981,6 +2081,10 @@ void Song::BindToQuery(SqlQuery *query) const {
   query->BindFloatValue(u":bpm"_s, d->bpm_);
   query->BindStringValue(u":mood"_s, d->mood_);
   query->BindStringValue(u":initial_key"_s, d->initial_key_);
+
+  query->BindValue(u":lyrics_storage_type"_s, static_cast<int>(d->lyrics_storage_type_));
+  query->BindValue(u":synced_lyrics_storage_type"_s, static_cast<int>(d->synced_lyrics_storage_type_));
+  query->BindLongLongValueOrZero(u":lrc_mtime"_s, d->lrc_mtime_);
 
   query->BindStringValue(u":acoustid_id"_s, d->acoustid_id_);
   query->BindStringValue(u":acoustid_fingerprint"_s, d->acoustid_fingerprint_);
@@ -2101,6 +2205,47 @@ void Song::MergeUserSetData(const Song &other, const bool merge_playcount, const
   set_art_unset(other.art_unset());
   set_compilation_on(other.compilation_on());
   set_compilation_off(other.compilation_off());
+
+}
+
+Song Song::SongWithEditedFields(const Song &original_song, const Song &edited_song, Song song) {
+
+  if (edited_song.title() != original_song.title()) song.set_title(edited_song.title());
+  if (edited_song.titlesort() != original_song.titlesort()) song.set_titlesort(edited_song.titlesort());
+  if (edited_song.artist() != original_song.artist()) song.set_artist(edited_song.artist());
+  if (edited_song.artistsort() != original_song.artistsort()) song.set_artistsort(edited_song.artistsort());
+  if (edited_song.album() != original_song.album()) song.set_album(edited_song.album());
+  if (edited_song.albumsort() != original_song.albumsort()) song.set_albumsort(edited_song.albumsort());
+  if (edited_song.albumartist() != original_song.albumartist()) song.set_albumartist(edited_song.albumartist());
+  if (edited_song.albumartistsort() != original_song.albumartistsort()) song.set_albumartistsort(edited_song.albumartistsort());
+  if (edited_song.composer() != original_song.composer()) song.set_composer(edited_song.composer());
+  if (edited_song.composersort() != original_song.composersort()) song.set_composersort(edited_song.composersort());
+  if (edited_song.performer() != original_song.performer()) song.set_performer(edited_song.performer());
+  if (edited_song.performersort() != original_song.performersort()) song.set_performersort(edited_song.performersort());
+  if (edited_song.grouping() != original_song.grouping()) song.set_grouping(edited_song.grouping());
+  if (edited_song.genre() != original_song.genre()) song.set_genre(edited_song.genre());
+  if (edited_song.comment() != original_song.comment()) song.set_comment(edited_song.comment());
+  if (edited_song.lyrics() != original_song.lyrics()) song.set_lyrics(edited_song.lyrics());
+  if (edited_song.synced_lyrics() != original_song.synced_lyrics()) song.set_synced_lyrics(edited_song.synced_lyrics());
+  if (edited_song.lyrics_storage_type() != original_song.lyrics_storage_type()) song.set_lyrics_storage_type(edited_song.lyrics_storage_type());
+  if (edited_song.synced_lyrics_storage_type() != original_song.synced_lyrics_storage_type()) song.set_synced_lyrics_storage_type(edited_song.synced_lyrics_storage_type());
+  if (edited_song.track() != original_song.track()) song.set_track(edited_song.track());
+  if (edited_song.disc() != original_song.disc()) song.set_disc(edited_song.disc());
+  if (edited_song.year() != original_song.year()) song.set_year(edited_song.year());
+  if (edited_song.compilation() != original_song.compilation()) song.set_compilation(edited_song.compilation());
+  if (edited_song.rating() != original_song.rating()) song.set_rating(edited_song.rating());
+  // The play statistics are reset together, so they are all copied when one of them was changed.
+  if (edited_song.playcount() != original_song.playcount() || edited_song.skipcount() != original_song.skipcount() || edited_song.lastplayed() != original_song.lastplayed()) {
+    song.set_playcount(edited_song.playcount());
+    song.set_skipcount(edited_song.skipcount());
+    song.set_lastplayed(edited_song.lastplayed());
+  }
+  if (edited_song.art_embedded() != original_song.art_embedded()) song.set_art_embedded(edited_song.art_embedded());
+  if (edited_song.art_automatic() != original_song.art_automatic()) song.set_art_automatic(edited_song.art_automatic());
+  if (edited_song.art_manual() != original_song.art_manual()) song.set_art_manual(edited_song.art_manual());
+  if (edited_song.art_unset() != original_song.art_unset()) song.set_art_unset(edited_song.art_unset());
+
+  return song;
 
 }
 
